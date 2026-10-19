@@ -1,0 +1,4 @@
+Computed var 'WardrobeState.filtered_items' must return a value of type 
+'list[dict[str, str]]', got '['[', ']']' of type <class 'list'>.
+Computed var 'WardrobeState.filtered_items' must return a value of type 
+'list[dict[str, str]]', got '['[', ']']' of type <class 'list'>.

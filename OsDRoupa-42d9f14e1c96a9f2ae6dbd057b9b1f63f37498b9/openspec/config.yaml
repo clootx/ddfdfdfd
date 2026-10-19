@@ -1,0 +1,65 @@
+schema: spec-driven
+
+context: |
+  Project: OSDroupa — Gestão inteligente de roupas, looks, confecção e arara conectada.
+  Started: 14/09/2026 (Início do projeto em 14 de setembro)
+
+  Domain: Sistema para gestão de usuários, clientes, guarda-roupa digital, arara física inteligente com IoT (RFID e Pick-to-light), catálogo de roupas sob demanda, pedidos, ordens de produção (OP/OE), transações financeiras via Asaas e recomendações com Inteligência Artificial baseadas em clima e ocasião.
+
+  Tech stack:
+    - Frontend: Python com Reflex (UI reativa, componentizada, orientada a estados)
+    - Backend: Xano (APIs REST, XanoScript, PostgreSQL relacional gerenciado)
+    - Gateway de Pagamentos: Asaas Sandbox (clientes, cobranças, tokenização de cartão)
+    - Mensageria: SendGrid (e-mails transacionais)
+    - Gestão de Mudanças: OpenSpec (schema spec-driven)
+    - Ambiente Python: venv nativo + pip (requirements.txt)
+
+  Architecture:
+    O backend (Xano) é a fonte única de verdade para regras de negócio, persistência, autenticação e integrações externas (Asaas, SendGrid).
+    O frontend (Reflex) consome os contratos de API do Xano e gerencia o estado da interface.
+    O frontend nunca deve ser considerado mecanismo de segurança; validações críticas residem no backend.
+
+  Security:
+    Autenticação baseada em Bearer token (JWT).
+    Validação rigorosa de dados de entrada, permissões e integridade de registros no backend.
+
+  Development:
+    O projeto é desenvolvido incrementalmente com fatias verticais utilizando OpenSpec.
+    O ciclo padrão é: Explore -> Propose -> Review -> Apply -> Verify -> Archive.
+    Mudanças devem ter escopo pequeno, objetivo claro e critérios de verificação bem definidos.
+
+  Language:
+    Escrever toda a documentação, artefatos OpenSpec e mensagens de commit em português brasileiro.
+
+rules:
+  proposal:
+    - Descrever claramente o problema, o objetivo e o escopo da mudança.
+    - Explicitar o que está dentro do escopo e o que está fora do escopo.
+    - Manter a proposta concisa e focada em uma fatia vertical funcional.
+
+  specs:
+    - Escrever requisitos funcionais verificáveis (RF-xx).
+    - Utilizar cenários de aceitação estruturados no formato Dado/Quando/Então (Gherkin).
+    - Incluir casos de sucesso e tratamento de erros relevantes.
+
+  design:
+    - Detalhar a integração entre o frontend Reflex e os endpoints do Xano.
+    - Especificar contratos de dados, estado da aplicação e componentes de UI.
+    - Documentar decisões de modelagem e impactos no banco de dados.
+
+  tasks:
+    - Dividir a implementação em tarefas pequenas, sequenciais e verificáveis em tasks.md.
+    - Cada tarefa deve indicar claramente o critério de conclusão.
+
+operations:
+  apply:
+    guidance:
+      - Seguir estritamente a ordem das tarefas definidas em tasks.md.
+      - Executar testes e validações locais antes de marcar tarefas como concluídas.
+      - Não alterar arquivos fora do escopo da change sem justificativa explícita.
+
+  archive:
+    guidance:
+      - Confirmar que todas as tarefas de tasks.md foram concluídas e verificadas.
+      - Consolidar as novas capacidades e comportamentos na pasta openspec/specs/.
+      - Mover a pasta da change para openspec/changes/archive/.

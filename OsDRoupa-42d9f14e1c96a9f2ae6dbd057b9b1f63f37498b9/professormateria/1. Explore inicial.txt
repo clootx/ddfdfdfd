@@ -1,0 +1,59 @@
+Quero realizar uma sessão de Explore do projeto.
+
+Analise todo o contexto atualmente disponível no repositório antes de propor qualquer implementação, incluindo:
+
+- AGENTS.md;
+- docs/project-overview.md;
+- docs/domain-model.md;
+- openspec/config.yaml;
+- estrutura atual de openspec/;
+- código existente;
+- configuração do Reflex;
+- demais arquivos relevantes do projeto.
+
+O objetivo desta sessão NÃO é implementar funcionalidades e NÃO é criar imediatamente uma Change.
+
+Quero utilizar o Explore para identificar e decompor o sistema em funcionalidades e capacidades implementáveis de forma incremental.
+
+A partir do contexto do projeto:
+
+1. Identifique os principais módulos ou áreas funcionais do sistema.
+
+2. Para cada área, identifique as principais funcionalidades necessárias.
+
+3. Analise as dependências entre funcionalidades, especialmente dependências relacionadas a:
+   - modelo de dados;
+   - autenticação e autorização;
+   - regras de negócio;
+   - APIs;
+   - frontend;
+   - integrações externas.
+
+4. Proponha uma ordem lógica de implementação, considerando que:
+   - o sistema será desenvolvido incrementalmente;
+   - cada Change deve ter escopo pequeno e verificável;
+   - funcionalidades devem preferencialmente ser entregues de forma vertical;
+   - mudanças estruturais de maior impacto devem ser identificadas antecipadamente;
+   - o banco de dados não deve ser implementado de forma isolada apenas para "terminá-lo", mas sua evolução deve acompanhar as funcionalidades;
+   - o modelo global do domínio deve ser respeitado.
+
+5. Identifique quais funcionalidades devem ser consideradas fundacionais antes das demais.
+
+6. Identifique riscos, ambiguidades ou decisões arquiteturais que precisam ser resolvidas antes da implementação.
+
+7. Avalie se o modelo de domínio atual é suficiente para suportar a decomposição proposta ou se existem lacunas que precisam ser discutidas.
+
+8. Ao propor a decomposição, não presuma detalhes que ainda não foram definidos. Quando houver alternativas relevantes, apresente-as e explique suas consequências.
+
+9. Não implemente código, não altere o banco de dados e não crie uma Change nesta etapa.
+
+Ao final, apresente:
+
+- uma visão geral da decomposição funcional;
+- uma árvore ou mapa das funcionalidades;
+- as dependências entre elas;
+- uma ordem sugerida de implementação;
+- as primeiras 3 a 5 Changes que você considera mais adequadas;
+- decisões e dúvidas que precisam ser resolvidas antes da primeira Change.
+
+O resultado deve servir como base para posteriormente escolhermos a primeira Change e iniciarmos o workflow Propose → Review → Apply → Verify → Archive.
