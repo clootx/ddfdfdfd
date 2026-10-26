@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de boné">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f1ede8"/><stop offset="1" stop-color="#e3e3e1"/></linearGradient><linearGradient id="cloth" x2="1"><stop stop-color="#c27a53"/><stop offset="1" stop-color="#8b4f42"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="465" cy="152" r="82" fill="#e9a23b" opacity=".13"/>
+  <path d="M147 402q0-177 153-177 151 0 153 177H147z" fill="url(#cloth)" stroke="#794a41" stroke-width="7"/>
+  <path d="M145 397q-32 8-41 43 106 47 274 20 96-17 123-47-16-29-48-20" fill="#a85f47" stroke="#794a41" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M300 229v169m-101-138q56 58 101 58 47 0 101-58" fill="none" stroke="#e6b594" stroke-width="5"/>
+  <text x="300" y="658" text-anchor="middle" fill="#825345" font-family="sans-serif" font-size="17" letter-spacing="5">PONTO DE ENCONTRO</text>
+</svg>

@@ -7,6 +7,12 @@ query meuArmario verb=POST {
     text chave_local filters=trim
     text nome filters=trim
     text categoria filters=trim
+    text? status? filters=trim
+    text? cor? filters=trim
+    text? estacao? filters=trim
+    text? tamanho? filters=trim
+    text? marca? filters=trim
+    text? imagem_url? filters=trim
   }
 
   stack {
@@ -44,7 +50,12 @@ query meuArmario verb=POST {
             chave_local : $input.chave_local
             nome        : $input.nome
             categoria   : $input.categoria
-            status      : "No armário"
+            status      : $input.status|first_notempty:"No armário"
+            cor         : $input.cor
+            estacao     : $input.estacao
+            tamanho     : $input.tamanho
+            marca       : $input.marca
+            imagem_url  : $input.imagem_url
             favorita    : false
           }
         } as $ROUPA1

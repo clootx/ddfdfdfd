@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração de cinto caramelo">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f5efe5"/><stop offset="1" stop-color="#e8dfd2"/></linearGradient><linearGradient id="leather" x2="0" y2="1"><stop stop-color="#bb8051"/><stop offset="1" stop-color="#885331"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="453" cy="160" r="88" fill="#e9a23b" opacity=".13"/>
+  <path d="M120 284h326q44 0 44 44v18q0 44-44 44H154q-34 0-34 34t34 34h327" fill="none" stroke="url(#leather)" stroke-width="36" stroke-linecap="round"/>
+  <path d="M425 285v105m29-98 74 2v90h-74m-216-30v-1m-63 1v-1m-63 1v-1" fill="none" stroke="#61442e" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="452" cy="337" r="8" fill="#e1c08a"/><text x="300" y="662" text-anchor="middle" fill="#7c5637" font-family="sans-serif" font-size="17" letter-spacing="5">COURO VEGETAL</text>
+</svg>

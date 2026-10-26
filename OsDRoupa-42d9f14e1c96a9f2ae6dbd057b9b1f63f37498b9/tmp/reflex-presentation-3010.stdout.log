@@ -1,0 +1,9 @@
+Warning: Windows Subsystem for Linux (WSL) is recommended for improving initial
+install times.
+----------------------------- Starting Reflex App -----------------------------
+Warning: Your version (0.9.12) of reflex is out of date. Upgrade to 0.10.0 with
+'pip install reflex --upgrade'
+Compiling: ---------------------------------------- 100% 98/97 0:00:05
+Creating Production Build:  ---------------------------------- 100% 4/4 0:00:24
+--------------------------------- App Running ---------------------------------
+App running at: http://0.0.0.0:3010/

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração de calça de alfaiataria">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f4f1ec"/><stop offset="1" stop-color="#e6e8e7"/></linearGradient><linearGradient id="cloth" x2="1"><stop stop-color="#43536b"/><stop offset="1" stop-color="#283a54"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="145" cy="170" r="88" fill="#e9a23b" opacity=".1"/>
+  <path d="M190 152h220l-19 154-19 302H265l-7-260-10 260h-106l30-302z" fill="url(#cloth)" stroke="#1f3560" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M190 153h220m-112 0 6 195m-85-151-23 22m185-22 23 22M150 608h111m13 0h102" fill="none" stroke="#aeb8c6" stroke-width="4" stroke-linecap="round"/>
+  <path d="M172 320h60m-78 68h60m165-68h60m-69 68h60" stroke="#75849a" stroke-width="3" opacity=".8"/><text x="300" y="676" text-anchor="middle" fill="#43536b" font-family="sans-serif" font-size="17" letter-spacing="5">CORTE RETO</text>
+</svg>

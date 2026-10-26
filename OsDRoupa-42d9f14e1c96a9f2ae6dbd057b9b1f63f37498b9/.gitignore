@@ -1,6 +1,15 @@
 __pycache__/
 *.py[cod]
 *.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db-*
+data/
+.env
+.env.*
+!.env.example
 assets/external/
 .states
 .web

@@ -13,6 +13,9 @@ table TRANSACAO {
     decimal valor?
     text datavenc? filters=trim
     text descricao? filters=trim
+    text? status_gateway? filters=trim
+    bool? pago_confirmado?=false
+    timestamp? confirmado_em?
     int? pedido_id? {
       table = "PEDIDO"
     }

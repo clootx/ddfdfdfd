@@ -1,43 +1,27 @@
-# Índice de Changes — OpenSpec (OSDroupa)
+# Índice de Changes — OpenSpec OSDroupa
 
-Este diretório reúne as propostas e fatias verticais de evolução do projeto **OSDroupa**, organizadas estritamente sob o schema `spec-driven`.
+## Estado
 
----
+A única change ativa é [`023-consolidacao-geral-do-projeto/`](./023-consolidacao-geral-do-projeto/). Ela reúne os requisitos, decisões e pendências das changes anteriores em módulos. A consolidação documental não marca automaticamente como prontas as integrações externas nem os fluxos que ainda não foram exercitados.
 
-## 🧭 Onde encontrar as Changes:
+As tarefas não concluídas foram transferidas para [`023-consolidacao-geral-do-projeto/tasks.md`](./023-consolidacao-geral-do-projeto/tasks.md). As 19 pastas originais estão preservadas em [`archive/README.md`](./archive/README.md), incluindo suas propostas, designs, especificações e marcações de tarefas.
 
-| Status | Identificador | Título / Descrição | Onde encontrar |
-|---|---|---|---|
-| 📦 **Arquivada** | `001-foundation-identity-client` | Fundação de Identidade, Autenticação e Perfil de Cliente | [`archive/001-foundation-identity-client/`](./archive/001-foundation-identity-client/) |
-| 🚀 **Ativa** | `002-auth-landing-page` | Refatoração da Página Inicial (Entrar, Cadastro, Medidor de Força e Arara) | [`002-auth-landing-page/`](./002-auth-landing-page/) |
-| 🚀 **Ativa** | `003-address-and-cep` | Gestão de Endereços, Consulta e Upsert de CEP e Vinculação ao Cliente | [`003-address-and-cep/`](./003-address-and-cep/) |
-| ✅ **Concluída** | `004-auth-integration-xano` | Integração de Autenticação com Xano (Login Real, Cadastro, JWT e Dashboard) | [`004-auth-integration-xano/`](./004-auth-integration-xano/) |
-| 🚀 **Ativa** | `005-dashboard-retirement` | Remoção da página Dashboard e destino pós-autenticação em “Como funciona” | [`005-dashboard-retirement/`](./005-dashboard-retirement/) |
-| 🚀 **Ativa** | `006-persistent-account-profile-wardrobe` | Sessão Persistente, Perfil e Armário Pessoal | [`006-persistent-account-profile-wardrobe/`](./006-persistent-account-profile-wardrobe/) |
-| 🚀 **Ativa** | `007-storefront-catalog` | Loja, catálogo Xano, detalhe de produto e sacola persistente | [`007-storefront-catalog/`](./007-storefront-catalog/) |
-| 🚀 **Ativa** | `008-orders-checkout-payments` | Checkout PIX autenticado, pedidos e cobranças Asaas | [`008-orders-checkout-payments/`](./008-orders-checkout-payments/) |
-| 🚀 **Ativa** | `009-wardrobe-cloud-sync` | Armário do cliente sincronizado com Xano e migração local idempotente | [`009-wardrobe-cloud-sync/`](./009-wardrobe-cloud-sync/) |
-| 🚀 **Ativa** | `010-management-console` | Console administrativa para catálogo, pedidos, clientes e relatórios | [`010-management-console/`](./010-management-console/) |
-| 🚀 **Ativa** | `011-content-inspiration-challenges` | Inspiração, artigos editoriais e desafios pessoais | [`011-content-inspiration-challenges/`](./011-content-inspiration-challenges/) |
-| 🚀 **Ativa** | `012-smart-closet-iot` | Dispositivos e pareamento seguro para o armário inteligente | [`012-smart-closet-iot/`](./012-smart-closet-iot/) |
+## Diretrizes de execução
 
----
+- Xano é o backend exigido para a entrega; SQLite permanece como alternativa local de desenvolvimento.
+- Mercado Pago é o fluxo de pagamento atual. Referências Asaas antigas são histórico e não devem ser reativadas.
+- Uma tarefa marcada como concluída só representa o que foi validado na origem. Testes de sandbox, conta, publicação, e-mail ou hardware continuam pendentes quando a lista consolidada os mantém abertos.
+- Ao concluir a Change 023, revisar os requisitos e promover para `openspec/specs/` somente o comportamento implementado e validado.
 
-## 📁 Estrutura Padrão de cada Change:
-
-Cada pasta de change contém obrigatoriamente os 4 artefatos definidos pelo OpenSpec:
+## Estrutura da change ativa
 
 ```text
-nome-da-change/
-├── proposal.md       # Contexto, objetivos, escopo incluído e excluído
-├── specs/            # Requisitos funcionais (RF-xx) e cenários BDD (Dado/Quando/Então)
-│   └── modulo.md
-├── design.md         # Arquitetura técnica (Reflex + Xano), contratos de API e modelos
-└── tasks.md          # Checklist sequencial de tarefas para o workflow Apply
+023-consolidacao-geral-do-projeto/
+├── proposal.md
+├── design.md
+├── design/modules/      # decisões técnicas preservadas por domínio
+├── specs/               # requisitos/cenários das changes incorporadas
+└── tasks.md             # pendências abertas consolidadas
 ```
 
----
-
-## 🛠️ Como criar uma nova Change:
-Utilize os modelos pré-configurados em:
-👉 [`../templates/`](../templates/)
+Changes históricas anteriores a esta organização ficam em `archive/`. As changes 018 e 019 já estavam arquivadas antes da consolidação.

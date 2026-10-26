@@ -17,6 +17,10 @@ table PEDIDO {
       table = "ENDERECO"
     }
     text? chave_idempotencia? filters=trim
+    text? assinatura_checkout? {
+      visibility = "private"
+    }
+    text? pagamento_status? filters=trim
   
     // Criado, Pedido
     int status_pedido_id?=1 {

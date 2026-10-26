@@ -1,4 +1,4 @@
-// Local draft. Validate and import in the Xano workspace before publishing.
+// Published in Xano workspace 147975, live branch v1.
 table DISPOSITIVO_ARMARIO {
   auth = false
 

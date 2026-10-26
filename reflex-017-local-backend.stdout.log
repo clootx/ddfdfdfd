@@ -1,0 +1,6 @@
+Warning: Windows Subsystem for Linux (WSL) is recommended for improving initial
+install times.
+----------------------------- Starting Reflex App -----------------------------
+Warning: Unable to bind to :8004 due to: [WinError 10048] Normalmente é 
+permitida apenas uma utilização de cada endereço de soquete (protocolo/endereço
+de rede/porta).

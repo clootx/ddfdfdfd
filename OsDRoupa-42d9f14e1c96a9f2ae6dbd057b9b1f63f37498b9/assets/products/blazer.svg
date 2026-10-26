@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de blazer">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f3eee7"/><stop offset="1" stop-color="#e6e2dd"/></linearGradient><linearGradient id="cloth" x2="1" y2="1"><stop stop-color="#785f51"/><stop offset="1" stop-color="#493d3a"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="470" cy="145" r="82" fill="#e9a23b" opacity=".13"/>
+  <path d="m207 157 74-31h38l74 31 91 82-53 66-51-39v285H220V266l-51 39-53-66z" fill="url(#cloth)" stroke="#443b3b" stroke-width="6" stroke-linejoin="round"/>
+  <path d="m281 126 19 94-47 41 47 36 48-36-48-41 19-94m-19 171v218m-10-211 9 8 9-8m-9 60 9 8 9-8m-9 60 9 8 9-8" fill="none" stroke="#d7c9b7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="300" y="658" text-anchor="middle" fill="#5a4c42" font-family="sans-serif" font-size="17" letter-spacing="5">ALFAIATARIA</text>
+</svg>

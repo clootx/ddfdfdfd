@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de bolsa tote">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f4eee3"/><stop offset="1" stop-color="#e6dfd2"/></linearGradient><linearGradient id="bag" x2="1"><stop stop-color="#b89164"/><stop offset="1" stop-color="#92704f"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="460" cy="150" r="82" fill="#e9a23b" opacity=".12"/>
+  <path d="M178 269q0-126 122-126t122 126" fill="none" stroke="#715a42" stroke-width="20" stroke-linecap="round"/>
+  <path d="M145 259h310l-24 292q-3 32-35 32H204q-32 0-35-32z" fill="url(#bag)" stroke="#765c40" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M194 319h211m-105 0v173" stroke="#dec7a3" stroke-width="6"/><text x="300" y="658" text-anchor="middle" fill="#71583d" font-family="sans-serif" font-size="17" letter-spacing="5">MERCADO DE DOMINGO</text>
+</svg>

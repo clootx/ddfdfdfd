@@ -6,7 +6,7 @@ Este diretório contém modelos de referência para criação de novas mudanças
 
 1. Crie uma pasta dentro de `openspec/changes/` com o padrão:
    `openspec/changes/<id-sequencial>-<slug-da-funcionalidade>/`
-   *(Exemplo: `openspec/changes/002-address-and-cep/`)*
+   *(Exemplo: `openspec/changes/023-consolidacao-geral-do-projeto/`)*
 
 2. Copie e preencha os 4 artefatos padrão a partir destes templates:
    - `proposal.template.md` -> `openspec/changes/<pasta>/proposal.md`

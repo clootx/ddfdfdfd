@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de camiseta ampla">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#e8edf3"/><stop offset="1" stop-color="#dfe5ec"/></linearGradient><linearGradient id="cloth" x2="1"><stop stop-color="#526c8e"/><stop offset="1" stop-color="#263d5c"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="460" cy="150" r="82" fill="#e9a23b" opacity=".12"/>
+  <path d="m196 165 79-34h50l79 34 90 84-58 69-50-40v244H214V278l-50 40-58-69z" fill="url(#cloth)" stroke="#263d5c" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M273 132q27 40 54 0m-27 18v102m-51 17h102" fill="none" stroke="#d6dfea" stroke-width="6" stroke-linecap="round"/>
+  <text x="300" y="658" text-anchor="middle" fill="#405978" font-family="sans-serif" font-size="17" letter-spacing="5">RUA VIVA</text>
+</svg>

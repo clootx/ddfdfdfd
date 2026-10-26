@@ -4,18 +4,19 @@ context: |
   Project: OSDroupa — Gestão inteligente de roupas, looks, confecção e arara conectada.
   Started: 14/09/2026 (Início do projeto em 14 de setembro)
 
-  Domain: Sistema para gestão de usuários, clientes, guarda-roupa digital, arara física inteligente com IoT (RFID e Pick-to-light), catálogo de roupas sob demanda, pedidos, ordens de produção (OP/OE), transações financeiras via Asaas e recomendações com Inteligência Artificial baseadas em clima e ocasião.
+  Domain: Sistema para gestão de usuários, clientes, guarda-roupa digital, arara física inteligente com IoT (RFID e Pick-to-light), catálogo de roupas sob demanda, pedidos, ordens de produção (OP/OE), pagamentos pelo Mercado Pago Orders e recomendações de looks baseadas em clima e ocasião.
 
   Tech stack:
     - Frontend: Python com Reflex (UI reativa, componentizada, orientada a estados)
-    - Backend: Xano (APIs REST, XanoScript, PostgreSQL relacional gerenciado)
-    - Gateway de Pagamentos: Asaas Sandbox (clientes, cobranças, tokenização de cartão)
-    - Mensageria: SendGrid (e-mails transacionais)
+    - Backend da entrega: Xano (APIs REST, XanoScript, PostgreSQL relacional gerenciado)
+    - Backend local de desenvolvimento: SQLite opcional
+    - Gateway de Pagamentos: Mercado Pago Orders (checkout hospedado e webhook assinado)
+    - Mensageria: SMTP/SendGrid opcional (e-mails transacionais)
     - Gestão de Mudanças: OpenSpec (schema spec-driven)
     - Ambiente Python: venv nativo + pip (requirements.txt)
 
   Architecture:
-    O backend (Xano) é a fonte única de verdade para regras de negócio, persistência, autenticação e integrações externas (Asaas, SendGrid).
+    O Xano é a fonte de verdade para regras de negócio, persistência e autenticação na entrega. SQLite permanece como alternativa local, e integrações externas só são consideradas prontas após configuração e validação.
     O frontend (Reflex) consome os contratos de API do Xano e gerencia o estado da interface.
     O frontend nunca deve ser considerado mecanismo de segurança; validações críticas residem no backend.
 

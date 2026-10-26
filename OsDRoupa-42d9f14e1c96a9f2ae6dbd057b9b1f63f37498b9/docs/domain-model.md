@@ -185,3 +185,15 @@ Além do núcleo comercial, os anexos do projeto apontam para uma extensão do d
 ## Observação importante
 
 O modelo atual já capta a base de negócio. O que precisa ser resolvido é a unificação entre o modelo transacional atual e a visão de produto mais avançada, especialmente no que tange a peça/armário/uso/IA.
+
+## Extensões locais — Change 020
+
+- **GarmentWearEvent:** registra a peça usada, a ocasião e a data; pertence à conta e permite calcular custo por uso somente se houver preço de compra informado.
+- **PackingPlan:** agrupa destino, datas, ocasião e IDs de peças do armário do próprio usuário.
+- **TailoringRequest:** registra serviço, peça, observações, data preferida e etapa de atendimento; a gestão pode atualizar o estado.
+- **ChallengeCompletion:** chave única por conta e desafio. A pontuação vem de uma lista autorizada no servidor, não de um saldo enviado pelo navegador.
+- **Testimonial:** relato ligado à conta, com consentimento, opção anônima e estado de moderação; só relatos aprovados ficam públicos.
+- **PrivacyRequest:** solicitação privada associada à conta, com tipo, detalhes e etapa de análise.
+- **PaymentOrder:** pedido com gateway e ID da Order, URL de checkout, referência/idempotência e estado. O evento de webhook é deduplicado; o retorno do navegador não marca pagamento como confirmado.
+
+Estas entidades estão implementadas no SQLite local. Os contratos correspondentes ainda precisam ser portados e publicados no Xano para uso remoto.

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de óculos de sol">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#e9edf2"/><stop offset="1" stop-color="#dfe4eb"/></linearGradient><linearGradient id="lens" x2="0" y2="1"><stop stop-color="#61748e"/><stop offset="1" stop-color="#253b5a"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="465" cy="150" r="82" fill="#e9a23b" opacity=".12"/>
+  <path d="M110 331q7-39 51-41h103q42 2 45 42l-13 68q-12 58-77 57-68-2-87-61zm380 0q-7-39-51-41H336q-42 2-45 42l13 68q12 58 77 57 68-2 87-61z" fill="url(#lens)" stroke="#192c48" stroke-width="11" stroke-linejoin="round"/>
+  <path d="M302 329q-3-34-2-51m-192 28-41-24m486 24 41-24" fill="none" stroke="#192c48" stroke-width="12" stroke-linecap="round"/>
+  <text x="300" y="658" text-anchor="middle" fill="#314663" font-family="sans-serif" font-size="17" letter-spacing="5">PRISMA SOLAR</text>
+</svg>

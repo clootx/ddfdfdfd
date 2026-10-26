@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração de bolsa transversal">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f4eee5"/><stop offset="1" stop-color="#e8ddd0"/></linearGradient><linearGradient id="canvas" x2="1" y2="1"><stop stop-color="#c6aa7c"/><stop offset="1" stop-color="#9e805a"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="158" cy="150" r="90" fill="#e9a23b" opacity=".12"/>
+  <path d="M173 254 404 154q38-16 57 20l104 205q19 36-20 55L315 531q-38 17-58-20L153 309q-18-37 20-55z" fill="none" stroke="#765f46" stroke-width="18" stroke-linecap="round"/>
+  <path d="M170 333q0-24 24-24h215q26 0 26 25v210q0 24-26 24H194q-24 0-24-24z" fill="url(#canvas)" stroke="#765f46" stroke-width="6"/>
+  <path d="M170 369h265m-144 7v148m-71-104h143" fill="none" stroke="#e0cfad" stroke-width="6"/><circle cx="300" cy="449" r="12" fill="#73593b"/><text x="300" y="660" text-anchor="middle" fill="#6d5b45" font-family="sans-serif" font-size="17" letter-spacing="5">LONA NATURAL</text>
+</svg>

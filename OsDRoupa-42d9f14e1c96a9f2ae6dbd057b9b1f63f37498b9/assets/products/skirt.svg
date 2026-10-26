@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de saia midi">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f6efe9"/><stop offset="1" stop-color="#e9e2df"/></linearGradient><linearGradient id="cloth" x2="1"><stop stop-color="#8d5862"/><stop offset="1" stop-color="#633b4b"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="465" cy="150" r="82" fill="#e9a23b" opacity=".12"/>
+  <path d="M218 155h164l13 87 76 300q-171 63-342 0l76-300z" fill="url(#cloth)" stroke="#623b4b" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M218 157h164m-82 0v210m-112-76 92 34m206-34-92 34" fill="none" stroke="#dfc5bb" stroke-width="5" stroke-linecap="round"/>
+  <text x="300" y="658" text-anchor="middle" fill="#744756" font-family="sans-serif" font-size="17" letter-spacing="5">SAIA MIDI</text>
+</svg>

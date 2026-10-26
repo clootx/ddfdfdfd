@@ -7,6 +7,11 @@ query criarclienteassas verb=POST {
   }
 
   stack {
+    // LEGADO DESATIVADO: use Mercado Pago pelo backend SQLite ate publicar a migracao Xano.
+    precondition (false) {
+      error_type = "standard"
+      error = "Asaas desativado. Configure o checkout Mercado Pago no backend antes de usar o Xano."
+    }
     // Deprecated: replaces the old caller-supplied auth token flow.
     precondition (1 == 0) {
       error_type = "accessdenied"

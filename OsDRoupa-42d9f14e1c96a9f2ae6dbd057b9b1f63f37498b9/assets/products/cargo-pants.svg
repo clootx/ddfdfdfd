@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de calça utilitária">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#eff0e8"/><stop offset="1" stop-color="#e3e4dc"/></linearGradient><linearGradient id="cloth" x2="1"><stop stop-color="#77806a"/><stop offset="1" stop-color="#4e5d4c"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="145" cy="160" r="84" fill="#e9a23b" opacity=".12"/>
+  <path d="M179 145h242l-18 185-15 251H266l-10-215-12 215H151l-14-251z" fill="url(#cloth)" stroke="#465344" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M179 147h242m-121 0 4 200m-105 19h61v72h-61zm170 0h61v72h-61zM191 256h39m140 0h39" fill="none" stroke="#c4c5a7" stroke-width="5" stroke-linecap="round"/>
+  <text x="300" y="658" text-anchor="middle" fill="#4d5c49" font-family="sans-serif" font-size="17" letter-spacing="5">UTILITÁRIA</text>
+</svg>

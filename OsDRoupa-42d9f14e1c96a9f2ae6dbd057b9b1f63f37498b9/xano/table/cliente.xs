@@ -9,7 +9,17 @@ table CLIENTE {
   
     text nome? filters=trim
     text celular? filters=trim
-    text cpf? filters=trim
+    text data_nascimento? filters=trim
+    text pronome? filters=trim
+    text estilo_preferido? filters=trim
+    text tamanho_superior? filters=trim
+    text tamanho_inferior? filters=trim
+    text tamanho_calcado? filters=trim
+    text cores_favoritas? filters=trim
+    text sobre_mim? filters=trim
+    text cpf? filters=trim {
+      visibility = "private"
+    }
     int? status_cliente_id?=1 {
       table = "STATUS_CLIENTE"
     }

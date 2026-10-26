@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração de lenço estampado de algodão">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f3f0eb"/><stop offset="1" stop-color="#e5e0d8"/></linearGradient><linearGradient id="cloth" x2="1" y2="1"><stop stop-color="#d9c8ad"/><stop offset="1" stop-color="#b7a589"/></linearGradient><pattern id="print" width="58" height="58" patternUnits="userSpaceOnUse"><path d="M29 4 54 29 29 54 4 29z" fill="none" stroke="#50647b" stroke-width="3"/><circle cx="29" cy="29" r="5" fill="#bc6c51"/></pattern></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="456" cy="156" r="88" fill="#e9a23b" opacity=".13"/>
+  <path d="m300 139 171 171-171 301-171-301z" fill="url(#cloth)" stroke="#8b7c65" stroke-width="6"/><path d="m300 171 136 139-136 239-136-239z" fill="url(#print)" opacity=".85"/>
+  <path d="m300 139 171 171-171 301-171-301z" fill="none" stroke="#f1e8d9" stroke-width="7" stroke-dasharray="2 10"/><text x="300" y="661" text-anchor="middle" fill="#58657a" font-family="sans-serif" font-size="17" letter-spacing="5">ALGODAO ESTAMPADO</text>
+</svg>

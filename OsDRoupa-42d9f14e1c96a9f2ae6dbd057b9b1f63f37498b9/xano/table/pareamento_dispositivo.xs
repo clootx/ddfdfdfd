@@ -1,5 +1,5 @@
-// Local draft. Codes must be generated with a cryptographically secure source,
-// stored as a hash, expire quickly, and be consumed atomically exactly once.
+// Published in Xano workspace 147975, live branch v1. Pairing code generation
+// still requires a cryptographically secure source, hashing, expiry, and atomic single use.
 table PAREAMENTO_DISPOSITIVO {
   auth = false
 

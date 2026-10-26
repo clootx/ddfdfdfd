@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração de vestido midi">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f5eee8"/><stop offset="1" stop-color="#eadfd6"/></linearGradient><linearGradient id="cloth" x2="1" y2="1"><stop stop-color="#c86d52"/><stop offset="1" stop-color="#a94f3e"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="442" cy="175" r="92" fill="#e9a23b" opacity=".15"/>
+  <path d="m244 144 26-20h60l26 20 29 138-46 27 55 255H206l55-255-46-27z" fill="url(#cloth)" stroke="#884c40" stroke-width="5" stroke-linejoin="round"/>
+  <path d="m270 126 30 57 30-57m-86 156h172m-145 36-21 150m91-150 21 150m-143 48h162" fill="none" stroke="#e7a18a" stroke-width="4" stroke-linecap="round"/>
+  <path d="M216 354h45v50h-45z" fill="#d98268" opacity=".55"/><text x="300" y="663" text-anchor="middle" fill="#854b40" font-family="sans-serif" font-size="17" letter-spacing="5">MIDI TERRACOTA</text>
+</svg>

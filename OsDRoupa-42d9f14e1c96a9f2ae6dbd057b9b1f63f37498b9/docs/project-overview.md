@@ -1,67 +1,52 @@
-# Visão Geral do Projeto — OSDroupa
+﻿# Visão geral do OSDROUPA
 
-## 1. Informações Básicas e Histórico
-- **Projeto:** OSDroupa — Plataforma Integrada de Gestão de Roupas, E-commerce e Arara Inteligente Conectada
-- **Data de Início do Projeto:** 14/09/2026 (14/9)
-- **Responsável/Contato:** Bruno Magno (Impacta)
-- **Metodologia de Evolução:** OpenSpec (Schema `spec-driven`) com fatias verticais incrementais
+## Arquitetura atual
 
----
+- Interface em Reflex/Python, com páginas responsivas e um sistema visual compartilhado.
+- Xano é o backend exigido para a entrega. Inicie com `OSDROUPA_BACKEND=xano`; SQLite continua disponível para desenvolvimento local com `OSDROUPA_BACKEND=sqlite`. Se a variável não for definida, o código atual ainda seleciona SQLite.
+- OpenSpec acompanha a evolução em [`openspec/changes/README.md`](../openspec/changes/README.md).
 
-## 2. Contexto do Sistema
+SQLite armazena os dados em `data/osdroupa.sqlite3` ou no caminho configurado em `OSDROUPA_DB_PATH`. É indicado para desenvolvimento e uma única instância; não sincroniza entre máquinas nem substitui o Xano como backend da entrega.
 
-O **OSDroupa** é uma solução que une e-commerce têxtil, confecção sob demanda e experiência de guarda-roupa inteligente com IoT e Inteligência Artificial. O projeto conecta um backend robusto em Xano (com banco relacional PostgreSQL, endpoints XanoScript e integrações externas) a uma interface reativa e moderna em Python utilizando Reflex.
+## Funcionalidades no backend local
 
-O projeto teve seu desenvolvimento iniciado em **14/09/2026**, com a estruturação das tabelas de domínio, autenticação de usuários, modelagem de processos industriais/logísticos (OP/OE) e fluxos financeiros.
+- Cadastro, login, sessões, perfil, endereços e recuperação de senha local ou por SMTP.
+- Perfil com preferências opcionais de estilo, cores e tamanhos; favoritos do catálogo separados por conta no navegador.
+- Catálogo, sacola, pedidos demonstrativos e checkout Mercado Pago Orders configurável por produto.
+- Armário, cadastro de valor de compra, looks, agenda, recomendação contextual, mala e histórico/custo por uso.
+- Oito desafios por tema, com progresso persistido; fidelidade com níveis e histórico de pontos derivados de conclusões únicas.
+- Pedidos de ajuste, envio e moderação de depoimentos consentidos, política de privacidade e solicitações de titulares.
+- Painel administrativo para produtos, pedidos, clientes, relatos, solicitações de privacidade e fila de alfaiataria.
+- Pareamento de dispositivo apenas demonstrativo; não recebe eventos de sensores físicos.
 
----
+## Pagamentos
 
-## 3. Stack Tecnológica Atual
+O checkout demonstrativo não cobra. A venda real usa Mercado Pago Orders quando há credenciais configuradas no servidor. O pedido só é marcado como pago depois que o webhook assinado é validado e o backend consulta a Order diretamente. Veja [`payment-and-launch-checklist.md`](payment-and-launch-checklist.md) para configuração e pendências.
 
-### Frontend
-- **Reflex (Python):** Interface reativa orientada a estados (`rx.State`), componentes visuais, animações SVG (arara de roupas swing, tags de temperatura/ocasião), suporte a modo claro/escuro.
-- **Ambiente:** `venv` nativo do Python + `pip` gerenciado via `requirements.txt`.
-- **Agent Skills:** `reflex-docs`, `setup-python-env`, `reflex-process-management`.
+Os rascunhos XanoScript de pagamento que usavam Asaas estão bloqueados no repositório e o app impede a venda real quando usa Xano. Se os endpoints antigos já foram publicados no workspace remoto, ainda precisam ser desativados no painel. O checkout Mercado Pago está implementado no backend SQLite local; a integração correspondente ao Xano ainda precisa ser migrada, publicada e validada antes de habilitar pagamentos nesse modo.
 
-### Backend
-- **Xano & XanoScript:** APIs REST, regras de negócio e controle de acesso.
-- **Banco de Dados:** PostgreSQL relacional gerenciado no Xano.
-- **Grupos de API:** `authentication`, `PANELA_DE_BARRO`, `members_accounts`, `db_bruno_magno`, `event_logs`, `sendgrid_validation`.
+## Limites e integrações pendentes
 
-### Integrações Externas Ativas no Backend
-- **Asaas Sandbox:** Criação de clientes (`/v3/customers`), emissão de cobranças (`criarcobranca`) e tokenização de cartões de crédito.
-- **SendGrid:** Envio de e-mails transacionais básicos e dinâmicos (`sendgrid_basic_send`, `sendgrid_dynamic_send`).
-- **Agentes e IA no Xano:** Agente conversacional e tools integradas (`xano_example_agent`, `search_xano_docs`).
+- Credenciais de teste/produção do Mercado Pago, segredo do webhook e origem HTTPS pública precisam ser fornecidos pelo operador; o fluxo sandbox ainda precisa ser exercitado no ambiente publicado.
+- SMTP real, catálogo final com imagens e preços revisados, frete/fiscal, cancelamentos, estornos, conciliação e atendimento precisam de configuração operacional.
+- Previsão do tempo automática, prova de roupa no corpo por IA e hardware IoT dependem de provedores e testes específicos. O provador atual organiza imagens das próprias peças.
+- A página de privacidade e o registro de solicitações estão no produto; controlador, contato, retenção e texto final precisam ser preenchidos/revistos pelo responsável.
+- Produção exige banco compartilhado, domínio HTTPS, gerenciamento de segredos, backups, restauração e validação manual com perfis de cliente e admin.
 
-### IoT e Extensões Físicas
-- **RFID:** Rastreamento unitário de peças na arara e no estoque.
-- **LEDs Pick-to-Light:** Indicação visual de localização das peças para separação ou composição de look.
-- **Contexto Climático/Ocasião:** Recomendações dinâmicas de looks com base na temperatura e no evento (ex.: 22°C — Reunião).
+## Comandos locais
 
----
+```powershell
+# Modo exigido para a apresentação
+$env:OSDROUPA_BACKEND = "xano"
+reflex run
 
-## 4. Mapeamento Completo de Funções Existentes vs. OpenSpec
+# Alternativa offline para desenvolvimento
+$env:OSDROUPA_BACKEND = "sqlite"
+reflex run
+```
 
-A auditoria do repositório revelou um ecossistema amplo já modelado no backend que agora está sendo progressivamente cadastrado e especificado no OpenSpec:
+Para promover uma conta a admin depois de cadastrá-la:
 
-| Módulo / Capacidade | Artefatos no Código (Xano / Reflex) | Status no OpenSpec |
-|---|---|---|
-| **1. Identidade e Cliente** | Tabelas `user`, `account`, `CLIENTE`, `STATUS_CLIENTE`; APIs `/auth/login`, `/auth/signup`, `/auth/me`, `cadastra_cliente`; Reflex `AuthState` | **Change 001 Concluída & Arquivada** |
-| **2. Endereço e CEP** | Tabelas `endereco`, `cep`, `tipoendereco`; APIs `busca_cep`, `upsert_cep`, `salva_endereco`, `atualiza_endereco`, `marcar_endereco_padrao`, `consulta_endereco_do_cliente` | **Change 002 (Ativa / Em Planejamento)** |
-| **3. Catálogo de Roupas** | Tabelas `produto` (Nome, Descricao, Qtd_Disp, Url_Imagem, Preco, Precisa_Produzir) | Pendente de Change (Change 003) |
-| **4. Pedidos e Itens** | Tabelas `pedido`, `item`, `status_pedido`, `status_item` (Nfc_E, Cod_Entrega, Total) | Pendente de Change (Change 004) |
-| **5. Operações & Produção** | Tabelas `op` (Ordem de Produção), `oe` (Ordem de Execução/Entrega), `status_op`, `status_oe` | Pendente de Change (Change 005) |
-| **6. Pagamentos Asaas** | APIs `criarclienteassas`, `criarcobranca`, `toknzcartao`; Tabelas `cartaotoknzd`, `transacao`, `status_transacao`, `ttokenizacao` | Pendente de Change (Change 006) |
-| **7. Cancelamento e Estorno** | Tabelas `solcancelamento`, `status_solcancelamento`, `testorno`, `status_testorno` | Pendente de Change (Change 007) |
-| **8. Comunicação / E-mail** | Funções Xano `sendgrid_basic_send`, `sendgrid_dynamic_send` | Pendente de Change (Change 008) |
-| **9. Suporte e Auditoria** | Tabelas `faq`, `event_log` | Pendente de Change (Change 009) |
-| **10. IA & Recomendação** | Agente `xano_example_agent`, `agent_conversation`, `agent_message`, lógica de recomendação por clima | Pendente de Change (Change 010) |
-| **11. Hardware IoT Arara** | Tags RFID e LEDs Pick-to-Light integrados à interface de arara inteligente | Pendente de Change (Change 011) |
-
----
-
-## 5. Princípios de Desenvolvimento e Evolução
-
-1. **Evolução por Fatias Verticais:** Cada funcionalidade só é integrada ao frontend após contrato claro no OpenSpec e endpoints validados no Xano.
-2. **Segurança no Backend:** O backend é a fonte de integridade; o frontend Reflex nunca substitui validações de autorização.
-3. **Respeito ao Domínio:** A estrutura do negócio é preservada sem alterações desnecessárias de schema.
+```powershell
+..\.venv\Scripts\python.exe -m OSDroupa.local_backend set-admin voce@exemplo.com
+```

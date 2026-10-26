@@ -11,6 +11,11 @@ query toknzcartao verb=POST {
   }
 
   stack {
+    // LEGADO DESATIVADO: use Mercado Pago pelo backend SQLite ate publicar a migracao Xano.
+    precondition (false) {
+      error_type = "standard"
+      error = "Asaas desativado. Configure o checkout Mercado Pago no backend antes de usar o Xano."
+    }
     // Pega o API Token Assas do SLFood 
     db.get "" {
       field_name = "Plataforma"

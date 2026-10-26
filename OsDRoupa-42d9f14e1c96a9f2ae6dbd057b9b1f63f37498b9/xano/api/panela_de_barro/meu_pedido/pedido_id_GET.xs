@@ -40,8 +40,13 @@ query "meuPedido/{pedido_id}" verb=GET {
         {name: "PRODUTO", input: {id: $output.produto_id}, as: "produto"}
       ]
     } as $ITENS1
+
+    db.query TRANSACAO {
+      where = $var.PEDIDO1.id == $db.TRANSACAO.pedido_id
+      return = {type: "single"}
+    } as $TRANSACAO1
   }
 
-  response = {pedido: $PEDIDO1, status: $STATUSPEDIDO1, itens: $ITENS1}
+  response = {pedido: $PEDIDO1, status: $STATUSPEDIDO1, pagamento: $TRANSACAO1, itens: $ITENS1}
   guid = "ORDER-OSD-2026-002"
 }

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração de tricot azul marinho">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#edf1f4"/><stop offset="1" stop-color="#dfe6ea"/></linearGradient><linearGradient id="cloth" x2="1" y2="1"><stop stop-color="#425d78"/><stop offset="1" stop-color="#243b56"/></linearGradient><pattern id="knit" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M4 1v14m8-14v14" stroke="#8ba0b0" stroke-width="1" opacity=".35"/></pattern></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="440" cy="156" r="84" fill="#e9a23b" opacity=".12"/>
+  <path d="m196 167 72-35h64l72 35 82 82-62 60-43-41v248H219V268l-43 41-62-60z" fill="url(#cloth)" stroke="#20354d" stroke-width="5" stroke-linejoin="round"/>
+  <path d="m196 167 72-35h64l72 35 82 82-62 60-43-41v248H219V268l-43 41-62-60z" fill="url(#knit)"/>
+  <path d="M268 132q32 40 64 0M219 474h162M300 181v290" fill="none" stroke="#a6b4be" stroke-width="5" stroke-linecap="round"/><text x="300" y="663" text-anchor="middle" fill="#344d68" font-family="sans-serif" font-size="17" letter-spacing="5">TRICOT LEVE</text>
+</svg>

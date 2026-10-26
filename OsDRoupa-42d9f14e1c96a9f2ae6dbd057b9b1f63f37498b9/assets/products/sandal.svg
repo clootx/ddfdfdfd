@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 750" role="img" aria-label="Ilustração demonstrativa de sandália">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f5efe5"/><stop offset="1" stop-color="#e9e0d5"/></linearGradient><linearGradient id="sole" x2="1"><stop stop-color="#c69259"/><stop offset="1" stop-color="#8f6042"/></linearGradient></defs>
+  <rect width="600" height="750" rx="28" fill="url(#bg)"/><circle cx="460" cy="150" r="82" fill="#e9a23b" opacity=".13"/>
+  <path d="M278 177q93 5 117 115l16 241q4 97-92 112-99 15-116-79l10-258q4-125 65-131z" fill="url(#sole)" stroke="#78543b" stroke-width="7"/>
+  <path d="M279 191q-16 96-10 173m0 0q54 12 112-7m-112 7q43 39 80 85m32-95q-11 48-32 95" fill="none" stroke="#f1d9b5" stroke-width="14" stroke-linecap="round"/>
+  <text x="300" y="658" text-anchor="middle" fill="#78543b" font-family="sans-serif" font-size="17" letter-spacing="5">CAMINHO DE SAL</text>
+</svg>

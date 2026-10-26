@@ -18,3 +18,9 @@ Conforme as changes forem concluídas e arquivadas, surgirão especificações m
 Cada especificação consolidada reflete o estado atual em produção/implementação, com requisitos funcionais e cenários verificáveis.
 
 - [Gestão de Endereços e CEP](./addresses/spec.md)
+- [Páginas institucionais e responsividade](./institutional-pages/spec.md)
+- [Sistema visual e navegação](./design-system/spec.md)
+- [Pedidos e pagamentos atualizados para Mercado Pago](./orders-payments/spec.md)
+- [Requisitos da Change 020 — armário vivo, fidelidade e privacidade](../changes/archive/020-armario-vivo-loyalty-mercadopago/specs/armario-vivo/spec.md)
+
+As especificações e decisões ainda em andamento estão reunidas na única change ativa: [023 — consolidação geral do projeto](../changes/023-consolidacao-geral-do-projeto/).

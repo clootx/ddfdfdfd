@@ -1,4 +1,5 @@
-// Local draft. Only the authenticated device ingestion endpoint may write rows.
+// Published in Xano workspace 147975, live branch v1. Only a future authenticated
+// device ingestion endpoint with validated signatures may write rows.
 table EVENTO_DISPOSITIVO {
   auth = false
 

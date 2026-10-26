@@ -48,7 +48,7 @@ O endpoint `/auth/me` deve validar o token passado no cabeçalho `Authorization:
 ### RF-AUTH-06: Perfil e Armário Pessoal
 - A rota `/perfil` apresenta os dados de usuário de `/auth/me` e os dados do cliente de `/buscaCliente`.
 - A rota `/armario` permite cadastrar, remover, pesquisar e filtrar peças do acervo pessoal.
-- O armário usa o Xano como fonte de verdade e mantém um cache local separado por conta para preservar dados durante indisponibilidade.
+- O armário usa o backend configurado (SQLite local ou Xano) como fonte de verdade e mantém cache separado por conta. No SQLite, fotos enviadas são armazenadas como dados privados da peça; no Xano, o formulário aceita links HTTPS diretos.
 
 ### RF-AUTH-07: Logout Seguro
 - A ação `AuthState.logout` deve limpar `auth_token`, `current_user` e campos de formulário, redirecionando para a página de entrada `/`.

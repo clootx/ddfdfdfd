@@ -23,6 +23,7 @@ query meusPedidos verb=GET {
       sort = {PEDIDO.created_at: "desc"}
       addon = [
         {name: "STATUS_PEDIDO", input: {status_pedido_id: $output.status_pedido_id}, as: "status"}
+        {name: "TRANSACAO", input: {pedido_id: $output.id}, as: "pagamento"}
       ]
     } as $PEDIDOS1
   }
