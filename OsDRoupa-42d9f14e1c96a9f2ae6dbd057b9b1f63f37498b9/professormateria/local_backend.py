@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import smtplib
 import sqlite3
@@ -246,6 +247,41 @@ class LocalBackend:
             )
         return 0.0
 
+    def reserve_rate_limit_slots(self, limits: list[tuple[str, int, float]]) -> tuple[float, str]:
+        """Reserva uma vaga em todos os baldes de forma atômica (tudo ou nada).
+
+        Devolve (0.0, "") se reservou, ou (segundos de espera, balde que bloqueou).
+        Nenhuma vaga é consumida quando algum balde recusa.
+        """
+        if not limits or any(not b or m < 1 or w <= 0 for b, m, w in limits):
+            raise ValueError("Configuração de limite de chamadas inválida.")
+        now = time.time()
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._ensure_rate_limit_tables(db)
+            for bucket, max_requests, window_seconds in limits:
+                db.execute("INSERT OR IGNORE INTO outbound_rate_limits(bucket) VALUES(?)", (bucket,))
+                db.execute(
+                    "DELETE FROM outbound_rate_limit_requests WHERE bucket=? AND requested_at<=?",
+                    (bucket, now - window_seconds),
+                )
+                blocked_until = db.execute(
+                    "SELECT blocked_until FROM outbound_rate_limits WHERE bucket=?", (bucket,)
+                ).fetchone()[0]
+                if blocked_until > now:
+                    return blocked_until - now, bucket
+                row = db.execute(
+                    "SELECT COUNT(*) AS n, MIN(requested_at) AS oldest FROM outbound_rate_limit_requests WHERE bucket=?",
+                    (bucket,),
+                ).fetchone()
+                if row["n"] >= max_requests:
+                    return max(0.05, row["oldest"] + window_seconds - now), bucket
+            db.executemany(
+                "INSERT INTO outbound_rate_limit_requests(bucket,requested_at) VALUES(?,?)",
+                [(bucket, now) for bucket, _, _ in limits],
+            )
+        return 0.0, ""
+
     def pause_rate_limit(self, bucket: str, seconds: float) -> None:
         """Share an upstream cooldown across local app processes."""
         if not bucket or seconds <= 0:
@@ -410,6 +446,45 @@ class LocalBackend:
                         moderated_at TEXT
                     );
                     CREATE INDEX IF NOT EXISTS idx_testimonials_status ON testimonials(status,id DESC);
+                    CREATE TABLE IF NOT EXISTS inspirations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        local_key TEXT NOT NULL UNIQUE,
+                        name TEXT NOT NULL,
+                        occasion TEXT NOT NULL,
+                        weather_category TEXT NOT NULL DEFAULT '',
+                        region TEXT NOT NULL DEFAULT '',
+                        season TEXT NOT NULL DEFAULT '',
+                        palette TEXT NOT NULL DEFAULT '',
+                        fabrics TEXT NOT NULL DEFAULT '',
+                        rationale TEXT NOT NULL DEFAULT '',
+                        score TEXT NOT NULL DEFAULT '',
+                        pieces_json TEXT NOT NULL DEFAULT '[]',
+                        image_path TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'Privado' CHECK(status IN ('Privado','Pendente','Publicado','Recusado')),
+                        created_at TEXT NOT NULL,
+                        moderated_at TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_inspirations_feed ON inspirations(status,id DESC);
+                    CREATE INDEX IF NOT EXISTS idx_inspirations_user ON inspirations(user_id,id DESC);
+                    CREATE TABLE IF NOT EXISTS look_feedback (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        look_name TEXT NOT NULL DEFAULT '',
+                        garment_keys TEXT NOT NULL DEFAULT '[]',
+                        rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+                        reason TEXT NOT NULL DEFAULT '',
+                        occasion TEXT NOT NULL DEFAULT '',
+                        weather TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_look_feedback_user ON look_feedback(user_id,id DESC);
+                    CREATE TABLE IF NOT EXISTS inspiration_saves (
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        inspiration_id INTEGER NOT NULL REFERENCES inspirations(id) ON DELETE CASCADE,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, inspiration_id)
+                    );
                     CREATE TABLE IF NOT EXISTS privacy_requests (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -503,6 +578,7 @@ class LocalBackend:
                     ("shoe_size", "TEXT NOT NULL DEFAULT ''"),
                     ("favorite_colors", "TEXT NOT NULL DEFAULT ''"),
                     ("bio", "TEXT NOT NULL DEFAULT ''"),
+                    ("ai_personalization", "INTEGER NOT NULL DEFAULT 1"),
                 ):
                     if column not in user_columns:
                         db.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")
@@ -1069,7 +1145,6 @@ class LocalBackend:
 
     def _admin_resource(self, db: sqlite3.Connection, endpoint: str, query: dict[str, Any]) -> tuple[dict[str, Any], int]:
         if endpoint == "adminResumo":
-            counts = db.execute("SELECT COUNT(*) users FROM users").fetchone()["users"]
             orders = db.execute("SELECT COUNT(*) n FROM orders").fetchone()["n"]
             products = db.execute("SELECT COUNT(*) n FROM products WHERE active=1").fetchone()["n"]
             customers = db.execute("SELECT COUNT(*) n FROM users WHERE role='member'").fetchone()["n"]
@@ -1196,9 +1271,15 @@ class LocalBackend:
             if path.startswith("/api:6LtoY7Zt/"):
                 endpoint = path.removeprefix("/api:6LtoY7Zt/")
                 user: sqlite3.Row | None = None
-                public_endpoints = {"cadastraCliente", "depoimentosPublicos"}
+                public_endpoints = {"cadastraCliente", "depoimentosPublicos", "feedInspiracoes"}
                 if endpoint.split("/", 1)[0] not in public_endpoints:
                     user = self._require_user(db, headers)
+
+                inspiration_result = self._inspiration_routes(db, method, endpoint, payload, query, user, headers)
+                if inspiration_result is not None:
+                    return inspiration_result
+                if endpoint == "feedbackLooks":
+                    return self._feedback_routes(db, method, payload, user)
 
                 if endpoint == "cadastraCliente" and method == "POST":
                     return self._register(db, payload)
@@ -1215,7 +1296,7 @@ class LocalBackend:
                         "pronome": user["pronouns"], "estilo_preferido": user["style_preference"],
                         "tamanho_superior": user["top_size"], "tamanho_inferior": user["bottom_size"],
                         "tamanho_calcado": user["shoe_size"], "cores_favoritas": user["favorite_colors"],
-                        "sobre_mim": user["bio"],
+                        "sobre_mim": user["bio"], "personalizacao_ia": bool(user["ai_personalization"]),
                     }, 200
                 if endpoint == "perfil" and method in {"PATCH", "PUT"}:
                     name = str(payload.get("nome", user["name"]) or "").strip()
@@ -1245,6 +1326,10 @@ class LocalBackend:
                             return {"message": "Informe uma data de nascimento válida."}, 400
                         if birth_date > _now().date():
                             return {"message": "A data de nascimento não pode estar no futuro."}, 400
+                    personalization = payload.get("personalizacao_ia", bool(user["ai_personalization"]))
+                    if not isinstance(personalization, bool):
+                        return {"message": "Informe se a personalização por IA fica ativa."}, 400
+                    db.execute("UPDATE users SET ai_personalization=? WHERE id=?", (int(personalization), user["id"]))
                     db.execute(
                         """UPDATE users SET name=?,phone=?,birth_date=?,pronouns=?,style_preference=?,
                         top_size=?,bottom_size=?,shoe_size=?,favorite_colors=?,bio=? WHERE id=?""",
@@ -1258,7 +1343,7 @@ class LocalBackend:
                         "pronome": values["pronouns"], "estilo_preferido": values["style_preference"],
                         "tamanho_superior": values["top_size"], "tamanho_inferior": values["bottom_size"],
                         "tamanho_calcado": values["shoe_size"], "cores_favoritas": values["favorite_colors"],
-                        "sobre_mim": values["bio"],
+                        "sobre_mim": values["bio"], "personalizacao_ia": personalization,
                     }, 200
 
                 if endpoint == "consultaEnderecoDoCliente" and method == "GET":
@@ -1595,7 +1680,7 @@ class LocalBackend:
                     return {"solicitacoes": [dict(row) for row in rows]}, 200
 
                 if endpoint == "adminDepoimentos" and method == "GET":
-                    admin = self._require_admin(db, headers)
+                    self._require_admin(db, headers)
                     rows = db.execute("SELECT id,user_id,display_name,body,anonymous,consented,status,created_at FROM testimonials ORDER BY id DESC LIMIT 100").fetchall()
                     return {"depoimentos": [dict(row) for row in rows]}, 200
                 if endpoint.startswith("adminDepoimentos/") and method == "PATCH":
@@ -1668,7 +1753,7 @@ class LocalBackend:
                     product_id = self._path_int(endpoint)
                     row = db.execute("SELECT * FROM products WHERE id=? AND active=1", (product_id,)).fetchone()
                     return (self._product_dict(row), 200) if row else ({"message": "Produto não encontrado."}, 404)
-                admin = self._require_admin(db, headers)
+                self._require_admin(db, headers)
                 if endpoint in {"adminResumo", "adminProdutos", "adminPedidos", "adminClientes", "adminRelatorios"} and method == "GET":
                     return self._admin_resource(db, endpoint, query)
                 if endpoint == "adminProdutos" and method == "POST":
@@ -1680,6 +1765,195 @@ class LocalBackend:
                 return {"message": "Recurso administrativo local não encontrado."}, 404
 
         return {"message": "Backend local não reconhece este serviço."}, 404
+
+    # ── Inspirações e feed (Change 028) ──────────────────────────────────────
+    INSPIRATION_OCCASIONS = {"Dia a dia", "Trabalho", "Evento", "Viagem", "Outro"}
+    INSPIRATION_WEATHER = {"Quente", "Ameno", "Frio", "Chuvoso"}
+    INSPIRATION_REGIONS = {"Norte", "Nordeste", "Centro-Oeste", "Sudeste", "Sul"}
+    INSPIRATION_PAGE_SIZE = 24
+
+    @staticmethod
+    def _clean_image_ref(value: object) -> str:
+        """Só aceita imagens do catálogo local (/...) ou HTTPS; nunca data URI (fotos privadas do armário)."""
+        text = str(value or "").strip()[:500]
+        return text if (text.startswith("/") and ".." not in text) or text.startswith("https://") else ""
+
+    def _clean_inspiration(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("nome") or "").strip()[:80]
+        local_key = str(payload.get("chave_local") or "").strip()[:64]
+        occasion = str(payload.get("ocasiao") or "").strip()
+        if not name or not re.fullmatch(r"[0-9a-f]{32}", local_key) or occasion not in self.INSPIRATION_OCCASIONS:
+            raise ValueError("Informe nome, chave e ocasião válidos para a inspiração.")
+        weather = str(payload.get("clima") or "").strip()
+        region = str(payload.get("regiao") or "").strip()
+        image_path = str(payload.get("imagem") or "").strip()
+        if image_path and not re.fullmatch(r"looks/[0-9a-f]{32}\.(png|jpg|webp)", image_path):
+            raise ValueError("Imagem da inspiração inválida.")
+        raw_pieces = payload.get("pecas") or []
+        if not isinstance(raw_pieces, list) or not 1 <= len(raw_pieces) <= 12:
+            raise ValueError("A inspiração precisa ter de 1 a 12 peças.")
+        pieces = []
+        for piece in raw_pieces:
+            if not isinstance(piece, dict):
+                raise ValueError("Peça inválida.")
+            origin = str(piece.get("origem") or "")
+            pieces.append({
+                "papel": str(piece.get("papel") or "")[:40],
+                "nome": str(piece.get("nome") or "Peça")[:80],
+                "descricao": str(piece.get("descricao") or "")[:240],
+                "origem": origin if origin in {"armario", "catalogo", "sugerida"} else "sugerida",
+                "imagem_url": self._clean_image_ref(piece.get("imagem_url")) if origin == "catalogo" else "",
+            })
+        return {
+            "local_key": local_key, "name": name, "occasion": occasion,
+            "weather_category": weather if weather in self.INSPIRATION_WEATHER else "",
+            "region": region if region in self.INSPIRATION_REGIONS else "",
+            "season": str(payload.get("estacao") or "").strip()[:20],
+            "palette": str(payload.get("paleta") or "").strip()[:200],
+            "fabrics": str(payload.get("tecidos") or "").strip()[:200],
+            "rationale": str(payload.get("justificativa") or "").strip()[:1200],
+            "score": str(payload.get("nota") or "").strip()[:4],
+            "pieces_json": json.dumps(pieces, ensure_ascii=False),
+            "image_path": image_path,
+        }
+
+    @staticmethod
+    def _inspiration_dict(row: sqlite3.Row, *, owner_view: bool = False, saved_ids: set[int] | None = None) -> dict[str, Any]:
+        data = {
+            "id": row["id"], "nome": row["name"], "ocasiao": row["occasion"], "clima": row["weather_category"],
+            "regiao": row["region"], "estacao": row["season"], "paleta": row["palette"], "tecidos": row["fabrics"],
+            "justificativa": row["rationale"], "nota": row["score"], "pecas": json.loads(row["pieces_json"] or "[]"),
+            "imagem": row["image_path"], "autor": "Pessoa da comunidade", "data": row["created_at"],
+            "salvo": bool(saved_ids and row["id"] in saved_ids),
+        }
+        if owner_view:
+            data["status"] = row["status"]
+            data["chave_local"] = row["local_key"]
+        return data
+
+    FEEDBACK_REASONS = ("Não combina comigo", "Não serve para o clima", "Não serve para a ocasião",
+                        "Pouco confortável", "Já uso muito essas peças", "Outro motivo")
+
+    def _feedback_routes(self, db: sqlite3.Connection, method: str, payload: dict[str, Any], user: sqlite3.Row) -> tuple[Any, int]:
+        """Feedback 👍/👎 dos looks da IA (Change 030); gravado só por ação explícita da pessoa."""
+        if method == "GET":
+            rows = db.execute(
+                "SELECT * FROM look_feedback WHERE user_id=? ORDER BY id DESC LIMIT 30", (user["id"],),
+            ).fetchall()
+            return {"feedbacks": [{"id": row["id"], "nome": row["look_name"], "roupa_chaves": json.loads(row["garment_keys"]),
+                                   "avaliacao": "positivo" if row["rating"] > 0 else "negativo", "motivo": row["reason"],
+                                   "ocasiao": row["occasion"], "clima": row["weather"], "created_at": row["created_at"]} for row in rows]}, 200
+        if method == "POST":
+            rating = {"positivo": 1, "negativo": -1}.get(str(payload.get("avaliacao") or ""))
+            if rating is None:
+                return {"message": "Avaliação inválida."}, 400
+            reason = str(payload.get("motivo") or "").strip()
+            if rating < 0 and reason not in self.FEEDBACK_REASONS:
+                return {"message": "Escolha um motivo válido."}, 400
+            if rating > 0:
+                reason = ""
+            keys = payload.get("roupa_chaves") or []
+            if not isinstance(keys, list) or len(keys) > 12:
+                return {"message": "Peças inválidas."}, 400
+            owned = {row["local_key"] for row in db.execute("SELECT local_key FROM wardrobe_items WHERE user_id=?", (user["id"],))}
+            keys = sorted({str(key) for key in keys if str(key) in owned})
+            cursor = db.execute(
+                "INSERT INTO look_feedback(user_id,look_name,garment_keys,rating,reason,occasion,weather,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (user["id"], str(payload.get("nome") or "")[:80], json.dumps(keys), rating, reason,
+                 str(payload.get("ocasiao") or "")[:40], str(payload.get("clima") or "")[:30], _stamp()),
+            )
+            return {"id": cursor.lastrowid, "ok": True}, 201
+        if method == "DELETE":
+            cursor = db.execute("DELETE FROM look_feedback WHERE user_id=?", (user["id"],))
+            return {"apagados": cursor.rowcount, "ok": True}, 200
+        return {"message": "Método não permitido."}, 405
+
+    def _inspiration_routes(self, db: sqlite3.Connection, method: str, endpoint: str, payload: dict[str, Any],
+                            query: dict[str, Any], user: sqlite3.Row | None, headers: dict[str, str] | None) -> tuple[Any, int] | None:
+        base = endpoint.split("/", 1)[0]
+        if base not in {"feedInspiracoes", "minhasInspiracoes", "publicarInspiracao", "inspiracoesSalvas", "adminInspiracoes"}:
+            return None
+
+        if base == "feedInspiracoes" and method == "GET":
+            clauses, params = ["status='Publicado'"], []
+            for field, column, allowed in (("ocasiao", "occasion", self.INSPIRATION_OCCASIONS), ("clima", "weather_category", self.INSPIRATION_WEATHER), ("regiao", "region", self.INSPIRATION_REGIONS)):
+                value = str(query.get(field) or "").strip()
+                if value:
+                    if value not in allowed:
+                        return {"message": f"Filtro de {field} inválido."}, 400
+                    clauses.append(f"{column}=?")
+                    params.append(value)
+            try:
+                page = max(1, int(query.get("pagina") or 1))
+            except (TypeError, ValueError):
+                page = 1
+            size = self.INSPIRATION_PAGE_SIZE
+            rows = db.execute(
+                f"SELECT * FROM inspirations WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT ? OFFSET ?",
+                (*params, size + 1, (page - 1) * size),
+            ).fetchall()
+            return {"inspiracoes": [self._inspiration_dict(r) for r in rows[:size]], "pagina": page, "tem_mais": len(rows) > size}, 200
+
+        if base == "adminInspiracoes":
+            self._require_admin(db, headers)
+            if method == "GET":
+                rows = db.execute("SELECT * FROM inspirations WHERE status IN ('Pendente','Publicado','Recusado') ORDER BY status='Pendente' DESC, id DESC LIMIT 100").fetchall()
+                return {"inspiracoes": [self._inspiration_dict(r, owner_view=True) for r in rows]}, 200
+            if method == "PATCH":
+                status = str(payload.get("status") or "").strip()
+                if status not in {"Publicado", "Recusado"}:
+                    return {"message": "Escolha publicar ou recusar a inspiração."}, 400
+                cursor = db.execute("UPDATE inspirations SET status=?,moderated_at=? WHERE id=? AND status<>'Privado'", (status, _stamp(), self._path_int(endpoint)))
+                return ({"ok": True, "status": status}, 200) if cursor.rowcount else ({"message": "Inspiração não encontrada."}, 404)
+            return {"message": "Método não suportado."}, 405
+
+        assert user is not None
+        if base == "minhasInspiracoes" and method == "GET":
+            own = db.execute("SELECT * FROM inspirations WHERE user_id=? ORDER BY id DESC LIMIT 200", (user["id"],)).fetchall()
+            saved = db.execute(
+                "SELECT i.* FROM inspiration_saves s JOIN inspirations i ON i.id=s.inspiration_id WHERE s.user_id=? AND i.status='Publicado' ORDER BY s.created_at DESC LIMIT 200",
+                (user["id"],),
+            ).fetchall()
+            saved_ids = {r["id"] for r in saved}
+            return {
+                "criadas": [self._inspiration_dict(r, owner_view=True) for r in own],
+                "salvas": [self._inspiration_dict(r, saved_ids=saved_ids) for r in saved],
+            }, 200
+        if base == "minhasInspiracoes" and method == "POST":
+            data = self._clean_inspiration(payload)
+            existing = db.execute("SELECT * FROM inspirations WHERE local_key=?", (data["local_key"],)).fetchone()
+            if existing:
+                if existing["user_id"] != user["id"]:
+                    raise PermissionError("A chave já está vinculada a outra conta.")
+                return {"inspiracao": self._inspiration_dict(existing, owner_view=True)}, 200
+            columns = ", ".join(data)
+            cursor = db.execute(
+                f"INSERT INTO inspirations(user_id, {columns}, created_at) VALUES(?, {', '.join('?' for _ in data)}, ?)",
+                (user["id"], *data.values(), _stamp()),
+            )
+            row = db.execute("SELECT * FROM inspirations WHERE id=?", (cursor.lastrowid,)).fetchone()
+            return {"inspiracao": self._inspiration_dict(row, owner_view=True)}, 201
+        if base == "minhasInspiracoes" and method == "DELETE":
+            cursor = db.execute("DELETE FROM inspirations WHERE id=? AND user_id=?", (self._path_int(endpoint), user["id"]))
+            return ({"deleted": True}, 200) if cursor.rowcount else ({"message": "Inspiração não encontrada."}, 404)
+        if base == "publicarInspiracao" and method == "POST":
+            if payload.get("autorizo_publicacao") is not True:
+                return {"message": "Autorize a publicação anônima para enviar ao feed."}, 400
+            cursor = db.execute(
+                "UPDATE inspirations SET status='Pendente', moderated_at=NULL WHERE id=? AND user_id=? AND status IN ('Privado','Recusado')",
+                (self._path_int(endpoint), user["id"]),
+            )
+            return ({"ok": True, "status": "Pendente"}, 200) if cursor.rowcount else ({"message": "Inspiração não encontrada ou já enviada."}, 404)
+        if base == "inspiracoesSalvas" and method == "POST":
+            inspiration_id = self._path_int(endpoint)
+            if not db.execute("SELECT 1 FROM inspirations WHERE id=? AND status='Publicado'", (inspiration_id,)).fetchone():
+                raise LookupError("Inspiração não encontrada.")
+            db.execute("INSERT OR IGNORE INTO inspiration_saves(user_id,inspiration_id,created_at) VALUES(?,?,?)", (user["id"], inspiration_id, _stamp()))
+            return {"ok": True, "salvo": True}, 200
+        if base == "inspiracoesSalvas" and method == "DELETE":
+            db.execute("DELETE FROM inspiration_saves WHERE user_id=? AND inspiration_id=?", (user["id"], self._path_int(endpoint)))
+            return {"ok": True, "salvo": False}, 200
+        return {"message": "Rota de inspirações não encontrada."}, 404
 
     @staticmethod
     def _path_int(endpoint: str) -> int:

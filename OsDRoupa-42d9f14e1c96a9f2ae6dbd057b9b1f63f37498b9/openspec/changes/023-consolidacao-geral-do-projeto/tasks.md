@@ -149,3 +149,12 @@ Fonte histórica: [`archive/022-boutiques-ficticias-catalogo-moda/tasks.md`](../
 
 - [x] Consolidar o escopo e a ordem dos módulos conforme a solicitação do projeto.
 - [ ] Arquivar esta change somente depois de concluir ou replanejar explicitamente as tarefas pendentes e atualizar as specs canônicas.
+
+## Pendências das Changes 024–030 (registradas em 02/11/2026)
+
+As tarefas detalhadas ficam em cada change; aqui só o que bloqueia a entrega:
+
+- [ ] Xano: importar, validar e publicar os rascunhos das Changes 028 (inspirações), 029 (`lookDoDia`) e 030 (feedback e `personalizacao_ia`).
+- [ ] Xano: 14 endpoints usados pelo app existem só no SQLite (depoimentos, fidelidade, malas, uso, privacidade, alfaiataria, pareamento).
+- [ ] Navegador: validar clima, estilista, avaliação, quadro do look, feed, 👍/👎 e o interruptor de personalização.
+- [ ] Gemini: uma chamada real de texto em plano gratuito confirmado (`tests/test_gemini_live.py`).

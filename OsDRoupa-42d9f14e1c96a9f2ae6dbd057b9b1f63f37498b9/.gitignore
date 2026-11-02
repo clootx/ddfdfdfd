@@ -13,3 +13,6 @@ data/
 assets/external/
 .states
 .web
+
+# Imagens geradas pela IA (Change 027)
+uploaded_files/

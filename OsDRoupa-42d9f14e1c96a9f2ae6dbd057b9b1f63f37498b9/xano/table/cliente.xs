@@ -17,6 +17,7 @@ table CLIENTE {
     text tamanho_calcado? filters=trim
     text cores_favoritas? filters=trim
     text sobre_mim? filters=trim
+    bool personalizacao_ia?=true
     text cpf? filters=trim {
       visibility = "private"
     }

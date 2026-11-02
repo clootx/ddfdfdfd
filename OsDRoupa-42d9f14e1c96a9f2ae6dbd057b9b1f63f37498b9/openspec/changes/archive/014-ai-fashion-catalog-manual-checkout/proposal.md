@@ -1,5 +1,7 @@
 # Proposta — 014-ai-fashion-catalog-manual-checkout
 
+> **Nota (Change 029):** "criados por IA" aqui se refere ao catálogo demonstrativo cadastrado uma vez, não a uma IA rodando na plataforma. A IA em execução (estilista) é a da Change 029, só com Google Gemini.
+
 ## Contexto
 
 A loja oculta os 15 produtos atuais porque o catálogo remoto contém alimentos e bebidas. O checkout disponível exige Asaas e não funciona quando as credenciais do gateway não estão configuradas.

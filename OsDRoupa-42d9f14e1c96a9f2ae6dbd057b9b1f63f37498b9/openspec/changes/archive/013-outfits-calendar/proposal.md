@@ -1,5 +1,7 @@
 # Proposta — 013-outfits-calendar
 
+> **Nota (Changes 029 e 030):** os looks salvos aqui (`meusLooks`) passaram a ser enviados ao estilista com IA como "looks recentes" (só as chaves das peças) para evitar sugestões repetidas. O comportamento desta change não mudou.
+
 ## Contexto
 
 O armário digital já permite organizar peças, mas ainda não transforma o acervo em looks reutilizáveis nem em um planejamento visual para a semana. O progresso local deve continuar disponível quando o Xano estiver fora do ar.

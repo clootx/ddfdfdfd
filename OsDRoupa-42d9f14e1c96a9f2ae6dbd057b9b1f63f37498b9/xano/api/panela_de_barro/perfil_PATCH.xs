@@ -14,6 +14,7 @@ query perfil verb=PATCH {
     text tamanho_calcado? filters=trim|max:24
     text cores_favoritas? filters=trim|max:100
     text sobre_mim? filters=trim|max:240
+    bool personalizacao_ia?
   }
 
   stack {

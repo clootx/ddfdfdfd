@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import dataclasses
 import json
+import logging
 import math
 import os
 import re
@@ -16,7 +18,15 @@ import httpx
 import reflex as rx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from rxconfig import config
+from OSDroupa.env import load_project_env
+
+load_project_env()  # antes de qualquer leitura de os.environ neste módulo
+
+from OSDroupa import daily_look  # noqa: E402
+from OSDroupa.ai import imaging, limits, stylist  # noqa: E402
+from OSDroupa.ai.stylist import LookPiece, LookProposal, LookReview, LookSwap  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -374,8 +384,8 @@ _TAG = (
 RAIL_SVG = (
     '<svg viewBox="0 0 600 380" style="width:100%;height:auto" role="img" '
     'aria-label="Arara de roupas inteligente com sugestão de look selecionado para 22°C em reunião">'
-    f'<line x1="20" y1="30" x2="580" y2="30" stroke="#C9D3E8" stroke-width="3" stroke-linecap="round"/>'
-    f'<circle cx="20" cy="30" r="5" fill="#C9D3E8"/><circle cx="580" cy="30" r="5" fill="#C9D3E8"/>'
+    '<line x1="20" y1="30" x2="580" y2="30" stroke="#C9D3E8" stroke-width="3" stroke-linecap="round"/>'
+    '<circle cx="20" cy="30" r="5" fill="#C9D3E8"/><circle cx="580" cy="30" r="5" fill="#C9D3E8"/>'
     + _garment(76, "M-36 96 L0 116 L36 96 L54 124 L48 250 H-48 L-54 124 Z", "#2F4B80", _seam("M0 116 V245"))
     + '<g class="osd-swing">'
     + _garment(190, "M-36 96 L0 116 L36 96 L52 122 L46 205 H-46 L-52 122 Z", "#EDE9DF", _seam("M-14 100 L0 116 L14 100"))
@@ -447,6 +457,7 @@ class AuthState(rx.State):
     )
     current_user: dict = {}
     client_profile: dict = {}
+    profile_ai_personalization_draft: bool = True
     profile_name_draft: str = ""
     profile_phone_draft: str = ""
     profile_birth_date_draft: str = ""
@@ -569,6 +580,26 @@ class AuthState(rx.State):
         self.profile_bio_draft = value
         self.profile_save_message = ""
 
+    def set_profile_ai_personalization_draft(self, value: bool):
+        self.profile_ai_personalization_draft = bool(value)
+        self.profile_save_message = ""
+
+    async def clear_ai_feedback(self):
+        """Apaga todo o histórico de 👍/👎 da conta (Change 030)."""
+        if await self._session_gate() != "ok":
+            self.profile_save_error = True
+            self.profile_save_message = self.session_error or "Entre novamente para apagar o histórico."
+            return
+        try:
+            async with XanoAsyncClient(timeout=XANO_TIMEOUT) as client:
+                response = await client.delete(f"{XANO_PDB}/feedbackLooks", headers={"Authorization": f"Bearer {self._current_auth_token()}"})
+            response.raise_for_status()
+            self.profile_save_error = False
+            self.profile_save_message = "Histórico de avaliações dos looks apagado."
+        except (httpx.HTTPError, ValueError) as exc:
+            self.profile_save_error = True
+            self.profile_save_message = _xano_failure_message(exc, "Não foi possível apagar o histórico agora.")
+
     async def save_profile(self):
         session_status = await self._session_gate()
         if session_status != "ok":
@@ -608,6 +639,7 @@ class AuthState(rx.State):
                         "tamanho_calcado": self.profile_shoe_size_draft,
                         "cores_favoritas": self.profile_colors_draft,
                         "sobre_mim": self.profile_bio_draft,
+                        "personalizacao_ia": self.profile_ai_personalization_draft,
                     },
                 )
             if response.status_code == 401:
@@ -782,6 +814,7 @@ class AuthState(rx.State):
             self.profile_shoe_size_draft = str(self.client_profile.get("tamanho_calcado") or "")
             self.profile_colors_draft = str(self.client_profile.get("cores_favoritas") or "")
             self.profile_bio_draft = str(self.client_profile.get("sobre_mim") or "")
+            self.profile_ai_personalization_draft = self.client_profile.get("personalizacao_ia") is not False
 
     def validate_email(self, value: str) -> bool:
         return bool(EMAIL_RE.match(value.strip()))
@@ -1450,6 +1483,9 @@ class WardrobeState(AuthState):
 
 # ── Estado de Gerenciamento de Endereços (AddressState) ─────────────────
 LOOK_OCCASIONS = ["Dia a dia", "Trabalho", "Evento", "Viagem", "Outro"]
+AI_LOOKS_FAILURE = "Não foi possível gerar os looks agora. Tente novamente em instantes."
+AI_REVIEW_FAILURE = "Não foi possível avaliar o look agora. Tente novamente em instantes."
+AI_IMAGE_FAILURE = "Não foi possível gerar a imagem agora. Tente novamente em instantes."
 
 
 class LookState(WardrobeState):
@@ -1464,6 +1500,14 @@ class LookState(WardrobeState):
     look_error: str = ""
     look_notice: str = ""
     looks_remote_ready: bool = False
+    review_look_id: str = ""
+    review_look_name: str = ""
+    review_look_occasion: str = ""
+    review_base_keys: list[str] = []
+    look_review: LookReview = LookReview()
+    review_selected_swaps: list[str] = []
+    review_loading: bool = False
+    review_error: str = ""
 
     def _read_look_store(self) -> dict[str, list[dict[str, str]]]:
         try:
@@ -1679,6 +1723,116 @@ class LookState(WardrobeState):
         self.look_date = ""
         self.selected_garment_keys = []
         self.look_error = ""
+
+    @rx.event(background=True)
+    async def evaluate_look(self, look_id: str):
+        """Avalia um look salvo com o provedor de IA configurado (Changes 026 e 029)."""
+        owns_loading = False  # só libera o carregamento que esta chamada ligou
+        try:
+            async with self:
+                status = await self._session_gate()
+                if status == "login":
+                    return rx.redirect("/login")
+                if status == "retry":
+                    self.review_error = self.session_error or "Não foi possível validar sua conta."
+                    return
+                look = next((item for item in self.looks if item["id"] == look_id), None)
+                try:
+                    keys = json.loads(look["garment_keys"]) if look else []
+                except (TypeError, json.JSONDecodeError):
+                    keys = []
+                wardrobe = [dict(item) for item in self.wardrobe_items]
+                pieces = stylist.closet_pieces(keys, wardrobe)
+                self.review_look_id = look_id
+                self.look_review = LookReview()
+                self.review_selected_swaps = []
+                self.review_error = ""
+                if not look or not pieces:
+                    self.review_error = "As peças deste look não estão mais no armário."
+                    return
+                if not stylist.is_configured():
+                    self.review_error = "A avaliação com IA está indisponível: configure GEMINI_API_KEY no servidor."
+                    return
+                limit = await limits.reserve_async("texto", str(self.current_user.get("id", "")))
+                if not limit.allowed:
+                    self.review_error = limit.message("texto")
+                    return
+                self.review_loading = True
+                owns_loading = True
+                self.review_look_name = look["name"]
+                self.review_look_occasion = look["occasion"]
+                self.review_base_keys = [piece.ref for piece in pieces]
+                life = await self.get_state(WardrobeLifeState)
+                if not life.has_weather:
+                    await life.load_weather_context()
+                store = await self.get_state(StoreState)
+                if not store.products:
+                    await store.load_catalog()
+                catalog = [dict(product) for product in store.products]
+                style = str(self.client_profile.get("estilo_preferido") or "")
+                context = stylist.build_prompt_context(life._weather_for_ai(), look["occasion"], style, "", wardrobe, catalog)
+
+            try:
+                raw = await stylist.request_evaluation(context, look["name"], pieces)
+                review = stylist.validate_evaluation(raw, pieces, wardrobe, catalog)
+            except stylist.StylistUnavailable as exc:
+                if exc.reason == "quota":
+                    await limits.pause_after_quota_async("texto")
+                async with self:
+                    self.review_error = str(exc)
+                    self.review_loading = False
+                return
+            except Exception as exc:
+                logger.warning("evaluate_look: erro inesperado (%s)", type(exc).__name__)
+                async with self:
+                    self.review_error = AI_REVIEW_FAILURE
+                    self.review_loading = False
+                return
+            async with self:
+                if self.review_look_id == look_id:
+                    self.look_review = review
+                self.review_loading = False
+        except Exception as exc:
+            logger.warning("evaluate_look: falha fora da chamada à IA (%s)", type(exc).__name__)
+            async with self:
+                self.review_error = AI_REVIEW_FAILURE
+        finally:
+            # Libera o carregamento em qualquer saída (sucesso, erro tratado, erro inesperado).
+            if owns_loading:
+                async with self:
+                    self.review_loading = False
+
+    def toggle_review_swap(self, swap_id: str):
+        if swap_id in self.review_selected_swaps:
+            self.review_selected_swaps = [s for s in self.review_selected_swaps if s != swap_id]
+        else:
+            self.review_selected_swaps = [*self.review_selected_swaps, swap_id]
+
+    def close_review(self):
+        self.review_look_id = ""
+        self.look_review = LookReview()
+        self.review_selected_swaps = []
+        self.review_error = ""
+
+    async def save_adjusted_look(self):
+        keys = list(self.review_base_keys)
+        for swap in self.look_review.trocas:
+            if swap.id not in self.review_selected_swaps or swap.entra.origem != "armario":
+                continue
+            if swap.sai_ref in keys:
+                keys[keys.index(swap.sai_ref)] = swap.entra.ref
+            elif swap.entra.ref not in keys:
+                keys.append(swap.entra.ref)
+        if keys == self.review_base_keys:
+            self.review_error = "Marque ao menos uma troca do seu armário para criar a versão ajustada."
+            return
+        self.look_name = f"{self.review_look_name} (ajustado)"[:80]
+        self.look_occasion = self.review_look_occasion if self.review_look_occasion in LOOK_OCCASIONS else "Dia a dia"
+        self.look_date = ""
+        self.selected_garment_keys = keys
+        await self.save_look()
+        if not self.look_error:
+            self.close_review()
 
     async def delete_look(self, look_id: str):
         look = next((row for row in self.looks if row.get("id") == str(look_id)), None)
@@ -3041,6 +3195,19 @@ class WardrobeLifeState(WardrobeState):
     experience_notice: str = ""
     daily_weather: str = "Ameno"
     daily_occasion: str = "Dia a dia"
+    weather_context: dict[str, str] = {}
+    weather_city_query: str = ""
+    weather_loading: bool = False
+    weather_notice: str = ""
+    ai_proposals: list[LookProposal] = []
+    ai_note: str = ""
+    ai_loading: bool = False
+    ai_notice: str = ""
+    ai_error: str = ""
+    image_loading_id: str = ""
+    ai_saved_inspirations: list[str] = []
+    ai_feedback: dict[str, str] = {}
+    ai_feedback_open_id: str = ""
     daily_suggestions: list[dict[str, str]] = []
     experience_loading: bool = False
     history_items: list[dict[str, str]] = []
@@ -3139,13 +3306,344 @@ class WardrobeLifeState(WardrobeState):
             else:
                 self.experience_notice = f"Sugestão para {self.daily_occasion.lower()} · clima {self.daily_weather.lower()}."
         except (httpx.HTTPError, ValueError) as exc:
-            self.experience_error = _xano_failure_message(exc, "Não foi possível buscar uma combinação agora.")
+            # Plano B: mesma regra do endpoint calculada aqui, só quando o lookDoDia falha.
+            logger.warning("lookDoDia indisponível (%s: %s); usando a regra local", type(exc).__name__, exc)
+            self.daily_suggestions = daily_look.pick_daily_look(self.wardrobe_items, self.daily_weather, self.daily_occasion)
+            if self.daily_suggestions:
+                self.experience_notice = f"Sugestão calculada localmente porque {daily_look.failure_reason(exc)}."
+            else:
+                self.experience_error = _xano_failure_message(exc, "Não foi possível buscar uma combinação agora.")
         finally:
             self.experience_loading = False
 
     def set_daily_weather(self, value: str):
         if value in {"Quente", "Ameno", "Frio", "Chuvoso"}:
             self.daily_weather = value
+            if self.weather_context and value != self.weather_context.get("categoria"):
+                self.weather_context = {**self.weather_context, "manual": "1"}
+                self.weather_notice = "Clima escolhido manualmente; a previsão continua visível como referência."
+
+    def set_weather_city_query(self, value: str):
+        self.weather_city_query = value[:80]
+
+    @rx.var
+    def has_weather(self) -> bool:
+        return bool(self.weather_context.get("cidade"))
+
+    def set_ai_note(self, value: str):
+        self.ai_note = value[:stylist.MAX_NOTE_LENGTH]
+
+    def _weather_for_ai(self) -> dict:
+        if self.weather_context.get("cidade") and not self.weather_context.get("manual"):
+            return dict(self.weather_context)
+        return {"categoria": self.daily_weather, "observacao": "clima escolhido manualmente pela pessoa"}
+
+    async def _saved_looks_for_ai(self) -> list[dict]:
+        """Looks salvos mais recentes, para a IA não repetir; falha aqui não impede a geração."""
+        try:
+            response = await self._life_request("GET", "meusLooks")
+            response.raise_for_status()
+            data = response.json()
+            rows = data.get("looks", []) if isinstance(data, dict) else data
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("meusLooks indisponível para a IA (%s)", type(exc).__name__)
+            return []
+        if not isinstance(rows, list):
+            return []
+        rows = [row for row in rows if isinstance(row, dict)]
+        return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)[:stylist.MAX_RECENT_LOOKS]
+
+    async def _optional_rows(self, endpoint: str, key: str) -> list[dict]:
+        """Lista auxiliar para a personalização; indisponível vira lista vazia."""
+        try:
+            response = await self._life_request("GET", endpoint)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("%s indisponível para a personalização (%s)", endpoint, type(exc).__name__)
+            return []
+        rows = data.get(key, []) if isinstance(data, dict) else []
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    @rx.var
+    def ai_personalization_on(self) -> bool:
+        return self.client_profile.get("personalizacao_ia") is not False
+
+    def open_ai_feedback(self, proposal_id: str):
+        self.ai_feedback_open_id = "" if self.ai_feedback_open_id == proposal_id else proposal_id
+
+    async def send_ai_feedback(self, proposal_id: str, rating: str, reason: str = ""):
+        """Grava 👍/👎 só quando a pessoa clica (Change 030)."""
+        proposal = next((p for p in self.ai_proposals if p.id == proposal_id), None)
+        if proposal is None or rating not in ("positivo", "negativo") or not self.ai_personalization_on:
+            return
+        try:
+            response = await self._life_request("POST", "feedbackLooks", payload={
+                "nome": proposal.nome,
+                "roupa_chaves": [piece.ref for piece in proposal.pecas if piece.origem == "armario"],
+                "avaliacao": rating, "motivo": reason,
+                "ocasiao": self.daily_occasion, "clima": self.daily_weather,
+            })
+            response.raise_for_status()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.ai_error = _xano_failure_message(exc, "Não foi possível registrar sua avaliação agora.")
+            return
+        self.ai_feedback = {**self.ai_feedback, proposal_id: rating}
+        self.ai_feedback_open_id = ""
+        self.ai_notice = "Obrigado! Sua avaliação vai orientar as próximas sugestões."
+
+    async def _use_heuristic_look(self, reason: str):
+        await self.load_daily_look()
+        self.ai_proposals = [stylist.heuristic_proposal(self.daily_suggestions, self.daily_occasion, self.daily_weather)] if self.daily_suggestions else []
+        self.ai_notice = f"Sugestão básica (IA indisponível). {reason}".strip()
+
+    @rx.event(background=True)
+    async def generate_ai_looks(self):
+        """Gera looks com o provedor de IA (Gemini) no servidor; usa a heurística atual como alternativa (Change 025)."""
+        owns_loading = False  # só libera o carregamento que esta chamada ligou
+        try:
+            async with self:
+                status = await self._session_gate()
+                if status == "login":
+                    return rx.redirect("/login")
+                if status == "retry":
+                    self.ai_error = self.session_error or "Não foi possível validar sua conta."
+                    return
+                self.ai_loading = True
+                owns_loading = True
+                self.ai_error = ""
+                self.ai_notice = ""
+                await self.load_wardrobe()
+                wardrobe = [dict(item) for item in self.wardrobe_items]
+                account_id = str(self.current_user.get("id", ""))
+                style = str(self.client_profile.get("estilo_preferido") or "")
+                if not stylist.is_configured():
+                    await self._use_heuristic_look("Configure GEMINI_API_KEY para ativar o estilista com IA.")
+                    self.ai_loading = False
+                    return
+                limit = await limits.reserve_async("texto", account_id)
+                if not limit.allowed:
+                    self.ai_error = limit.message("texto")
+                    self.ai_loading = False
+                    return
+                store = await self.get_state(StoreState)
+                if not store.products:
+                    await store.load_catalog()
+                catalog = [dict(product) for product in store.products]
+                recent = stylist.recent_looks(await self._saved_looks_for_ai(), self.ai_proposals, wardrobe)
+                style_profile = None
+                if self.ai_personalization_on:
+                    usage = await self._optional_rows("historicoUso", "itens")
+                    feedback = await self._optional_rows("feedbackLooks", "feedbacks")
+                    style_profile = stylist.build_style_profile(str(self.client_profile.get("cores_favoritas") or ""), usage, feedback, wardrobe)
+                else:
+                    style = ""  # personalização desligada no perfil: nada de gosto pessoal no contexto
+                context = stylist.build_prompt_context(self._weather_for_ai(), self.daily_occasion, style, self.ai_note, wardrobe, catalog, recent, style_profile)
+
+            try:
+                proposals, _ = stylist.validate_looks(await stylist.request_looks(context), wardrobe, catalog, recent)
+                if not proposals:
+                    raise stylist.StylistUnavailable("A IA de estilo não montou nenhuma combinação válida.")
+            except stylist.StylistUnavailable as exc:
+                if exc.reason == "quota":
+                    await limits.pause_after_quota_async("texto")
+                async with self:
+                    await self._use_heuristic_look(str(exc))
+                    self.ai_loading = False
+                return
+            except Exception as exc:
+                logger.warning("generate_ai_looks: erro inesperado (%s)", type(exc).__name__)
+                async with self:
+                    await self._use_heuristic_look("A IA de estilo está indisponível no momento.")
+                    self.ai_loading = False
+                return
+
+            async with self:
+                self.ai_proposals = proposals
+                self.ai_notice = f"{len(proposals)} looks criados pela IA para {self.daily_occasion.lower()}."
+                self.ai_loading = False
+        except Exception as exc:
+            logger.warning("generate_ai_looks: falha fora da chamada à IA (%s)", type(exc).__name__)
+            async with self:
+                self.ai_error = AI_LOOKS_FAILURE
+        finally:
+            # Libera o carregamento em qualquer saída (sucesso, erro tratado, erro inesperado).
+            if owns_loading:
+                async with self:
+                    self.ai_loading = False
+
+    @rx.var
+    def image_ai_enabled(self) -> bool:
+        return imaging.is_configured()
+
+    @rx.event(background=True)
+    async def generate_look_image(self, proposal_id: str):
+        """Gera a imagem editorial do look com a API Gemini do Google (Change 027)."""
+        owns_loading = False  # só libera o carregamento que esta chamada ligou
+        try:
+            async with self:
+                if self.image_loading_id:
+                    return
+                proposal = next((p for p in self.ai_proposals if p.id == proposal_id), None)
+                if proposal is None:
+                    return
+                if not imaging.is_configured():
+                    self.ai_error = "A geração de imagens está indisponível: ative OSDROUPA_IMAGES_ENABLED e configure GEMINI_API_KEY no servidor."
+                    return
+                account_id = str(self.current_user.get("id", ""))
+                limit = await limits.reserve_async("imagem", account_id)
+                if not limit.allowed:
+                    self.ai_error = limit.message("imagem")
+                    return
+                self.image_loading_id = proposal_id
+                owns_loading = True
+                self.ai_error = ""
+                pieces = [{"papel": p.papel_label, "nome": p.nome, "descricao": p.descricao, "imagem_url": p.imagem_url} for p in proposal.pecas]
+                look_name, palette, fabrics = proposal.nome, proposal.paleta, proposal.tecidos
+
+            try:
+                filename = await imaging.generate_look_image(look_name, pieces, palette, fabrics, rx.get_upload_dir() / "looks")
+            except imaging.ImageUnavailable as exc:
+                if exc.reason == "quota":
+                    await limits.pause_after_quota_async("imagem")
+                async with self:
+                    self.ai_error = str(exc)
+                    self.image_loading_id = ""
+                return
+            except Exception as exc:
+                logger.warning("generate_look_image: erro inesperado (%s)", type(exc).__name__)
+                async with self:
+                    self.ai_error = AI_IMAGE_FAILURE
+                    self.image_loading_id = ""
+                return
+            async with self:
+                proposals = list(self.ai_proposals)
+                for item in proposals:
+                    if item.id == proposal_id:
+                        item.imagem_gerada = f"looks/{filename}"
+                self.ai_proposals = proposals
+                self.image_loading_id = ""
+        except Exception as exc:
+            logger.warning("generate_look_image: falha fora da chamada à IA (%s)", type(exc).__name__)
+            async with self:
+                self.ai_error = AI_IMAGE_FAILURE
+        finally:
+            # Libera o carregamento em qualquer saída (sucesso, erro tratado, erro inesperado).
+            if owns_loading:
+                async with self:
+                    self.image_loading_id = ""
+
+    async def save_ai_inspiration(self, proposal_id: str):
+        """Guarda a proposta (com imagem e avaliação) nas inspirações da conta (Change 028)."""
+        proposal = next((p for p in self.ai_proposals if p.id == proposal_id), None)
+        if proposal is None or proposal_id in self.ai_saved_inspirations:
+            return
+        weather = self.weather_context if self.weather_context.get("cidade") else {}
+        rationale = " ".join(x for x in [proposal.justificativa_clima, proposal.justificativa_estilo] if x)
+        payload = {
+            "chave_local": proposal.id,
+            "nome": proposal.nome,
+            "ocasiao": self.daily_occasion,
+            "clima": self.daily_weather,
+            "regiao": weather.get("regiao", ""),
+            "estacao": weather.get("estacao", ""),
+            "paleta": proposal.paleta,
+            "tecidos": proposal.tecidos,
+            "justificativa": rationale,
+            "nota": proposal.avaliacao.nota_geral,
+            "imagem": proposal.imagem_gerada,
+            # Fotos do armário são privadas: só imagens do catálogo seguem com as peças.
+            "pecas": [
+                {"papel": p.papel_label, "nome": p.nome, "descricao": p.descricao, "origem": p.origem,
+                 "imagem_url": p.imagem_url if p.origem == "catalogo" else ""}
+                for p in proposal.pecas
+            ],
+        }
+        try:
+            response = await self._life_request("POST", "minhasInspiracoes", payload=payload)
+            response.raise_for_status()
+            self.ai_saved_inspirations = [*self.ai_saved_inspirations, proposal_id]
+            self.ai_notice = f"“{proposal.nome}” foi guardado nas suas inspirações."
+            self.ai_error = ""
+        except (httpx.HTTPError, ValueError) as exc:
+            self.ai_error = _xano_failure_message(exc, "Não foi possível guardar esta inspiração agora.")
+
+    def apply_ai_swap(self, proposal_id: str, swap_id: str):
+        proposals = list(self.ai_proposals)
+        proposal = next((p for p in proposals if p.id == proposal_id), None)
+        if proposal and stylist.apply_swap(proposal, swap_id):
+            self.ai_proposals = proposals
+            self.ai_notice = f"Troca aplicada em “{proposal.nome}”."
+
+    async def save_ai_proposal(self, proposal_id: str):
+        proposal = next((p for p in self.ai_proposals if p.id == proposal_id), None)
+        closet_keys = [piece.ref for piece in (proposal.pecas if proposal else []) if piece.origem == "armario"]
+        if not closet_keys:
+            self.ai_error = "Este look não tem peças do seu armário para salvar."
+            return
+        try:
+            response = await self._life_request("POST", "meusLooks", payload={
+                "chave_local": uuid.uuid4().hex,
+                "nome": proposal.nome,
+                "ocasiao": self.daily_occasion,
+                "data_planejada": datetime.now(timezone.utc).date().isoformat(),
+                "roupa_chaves": closet_keys,
+            })
+            response.raise_for_status()
+            self.ai_notice = f"“{proposal.nome}” foi salvo em Meus Looks."
+            self.ai_error = ""
+        except (httpx.HTTPError, ValueError) as exc:
+            self.ai_error = _xano_failure_message(exc, "Não foi possível salvar este look agora.")
+
+    async def _default_address_city(self) -> tuple[str, str]:
+        response = await self._life_request("GET", "consultaEnderecoDoCliente")
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("endereco1", []) if isinstance(payload, dict) else []
+        rows = [row for row in rows if isinstance(row, dict)]
+        address = next((row for row in rows if row.get("padrao")), rows[0] if rows else None)
+        cep = (address or {}).get("_cep") or {}
+        return str(cep.get("cidade") or "").strip(), str(cep.get("uf") or "").strip().upper()
+
+    async def _apply_weather(self, city: str, uf: str):
+        from OSDroupa.ai.weather import WeatherUnavailable, get_weather_context
+
+        self.weather_loading = True
+        try:
+            context = await get_weather_context(city, uf)
+            self.weather_context = {key: str(value) for key, value in context.items() if key != "manual"}
+            self.weather_context["manual"] = ""
+            self.daily_weather = context["categoria"]
+            self.weather_notice = ""
+        except WeatherUnavailable as exc:
+            self.weather_notice = f"{exc} Escolha o clima manualmente para continuar."
+        finally:
+            self.weather_loading = False
+
+    async def load_weather_context(self):
+        """Carrega a previsão real da cidade do endereço padrão (Change 024)."""
+        status = await self._session_gate()
+        if status != "ok":
+            return
+        try:
+            city, uf = await self._default_address_city()
+        except (httpx.HTTPError, ValueError):
+            city, uf = "", ""
+        if not city:
+            self.weather_notice = "Cadastre um endereço padrão ou informe uma cidade para usar a previsão real."
+            return
+        await self._apply_weather(city, uf)
+
+    async def search_weather_city(self):
+        query = self.weather_city_query.strip()
+        city, _, uf = query.partition("/")
+        if len(city.strip()) < 2:
+            self.weather_notice = "Informe o nome de uma cidade."
+            return
+        previous = dict(self.weather_context)
+        await self._apply_weather(city.strip(), uf.strip().upper()[:2])
+        if self.weather_notice and previous:
+            self.weather_context = previous
 
     def set_daily_occasion(self, value: str):
         if value in LOOK_OCCASIONS:
@@ -4917,7 +5415,7 @@ def home_features_section() -> rx.Component:
             _hover={
                 "border": f"1px solid {f['color']}66",
                 "transform": "translateY(-4px)",
-                "box_shadow": f"0 16px 40px rgba(0,0,0,0.4)",
+                "box_shadow": "0 16px 40px rgba(0,0,0,0.4)",
             },
             transition="all 0.25s ease",
         )
@@ -5621,10 +6119,280 @@ def life_garment_card(item: dict) -> rx.Component:
     return rx.box(rx.vstack(image, rx.text(item["name"], color=INK, font_weight="700"), rx.text(item["category"], color=MUTED, font_size="0.8rem"), spacing="2", width="100%", align_items="flex-start"), background="#FFFFFF", border="1px solid rgba(15,26,51,0.08)", border_radius="20px", padding="0.8rem", width="100%")
 
 
+def _weather_stat(label: str, value) -> rx.Component:
+    return rx.vstack(rx.text(label, color=MUTED, font_size="0.72rem", font_weight="700", letter_spacing="0.06em"), rx.text(value, color=INK, font_weight="700"), spacing="0", align_items="flex-start")
+
+
+def weather_context_card() -> rx.Component:
+    ctx = WardrobeLifeState.weather_context
+    forecast = rx.vstack(
+        rx.hstack(
+            rx.icon("cloud-sun", size=22, color=THREAD),
+            rx.heading(f"Clima agora em {ctx['cidade']}/{ctx['uf']}", font_family=DISPLAY, color=INK, font_size="1.15rem"),
+            spacing="2", align="center", flex_wrap="wrap",
+        ),
+        rx.text(ctx["condicao"], " · ", ctx["regiao"], " · ", ctx["estacao"], " · ", ctx["periodo"], color=MUTED, font_size="0.86rem"),
+        rx.grid(
+            _weather_stat("TEMPERATURA", f"{ctx['temperatura']} °C"),
+            _weather_stat("SENSAÇÃO", f"{ctx['sensacao']} °C"),
+            _weather_stat("MÍN / MÁX", f"{ctx['minima']}° / {ctx['maxima']}°"),
+            _weather_stat("CHUVA", f"{ctx['chuva_prob']}%"),
+            _weather_stat("UMIDADE", f"{ctx['umidade']}%"),
+            _weather_stat("UV MÁX", ctx["uv_max"]),
+            columns={"initial": "3", "md": "6"}, spacing="3", width="100%",
+        ),
+        rx.text(
+            "Fonte: Open-Meteo · atualizado às ", ctx["hora_local"], " (horário local)",
+            rx.cond(ctx["manual"] != "", " · clima escolhido manualmente", ""),
+            color=MUTED, font_size="0.74rem",
+        ),
+        spacing="2", width="100%", align_items="stretch",
+    )
+    search = rx.hstack(
+        rx.input(placeholder="Outra cidade (ex.: Curitiba/PR)", value=WardrobeLifeState.weather_city_query, on_change=WardrobeLifeState.set_weather_city_query, max_length=80, flex="1"),
+        rx.button("Ver clima", on_click=WardrobeLifeState.search_weather_city, loading=WardrobeLifeState.weather_loading, variant="outline", border_radius="100px"),
+        spacing="2", width="100%",
+    )
+    return rx.box(
+        rx.vstack(
+            rx.cond(
+                WardrobeLifeState.weather_loading & ~WardrobeLifeState.has_weather,
+                rx.hstack(rx.spinner(), rx.text("Consultando a previsão...", color=MUTED), spacing="2", align="center"),
+                rx.cond(WardrobeLifeState.has_weather, forecast, rx.fragment()),
+            ),
+            rx.cond(WardrobeLifeState.weather_notice != "", rx.text(WardrobeLifeState.weather_notice, color=MUTED, font_size="0.86rem")),
+            search,
+            spacing="3", width="100%", align_items="stretch",
+        ),
+        background="#FFFFFF", border="1px solid rgba(15,26,51,0.08)", border_radius="22px", padding="1.3rem", width="100%",
+    )
+
+
+def ai_piece_row(piece: LookPiece) -> rx.Component:
+    thumb = rx.cond(
+        piece.imagem_url != "",
+        rx.image(src=piece.imagem_url, alt=piece.nome, width="56px", height="56px", object_fit="cover", border_radius="12px", flex_shrink="0"),
+        rx.center(rx.icon("shirt", size=22, color=DENIM), width="56px", height="56px", background="linear-gradient(145deg,#E8EAF0,#F3F0E8)", border_radius="12px", flex_shrink="0"),
+    )
+    badge_color = rx.match(piece.origem, ("armario", "green"), ("catalogo", "amber"), "gray")
+    return rx.hstack(
+        thumb,
+        rx.vstack(
+            rx.hstack(
+                rx.text(piece.nome, color=INK, font_weight="700", font_size="0.9rem"),
+                rx.badge(piece.origem_label, color_scheme=badge_color, variant="soft", radius="full"),
+                spacing="2", align="center", flex_wrap="wrap",
+            ),
+            rx.text(piece.papel_label, rx.cond(piece.descricao != "", " · ", ""), piece.descricao, color=MUTED, font_size="0.8rem"),
+            rx.cond(piece.origem == "catalogo", rx.link("Ver na loja", href=f"/produto?id={piece.ref}", color=DENIM, font_size="0.78rem", font_weight="700")),
+            spacing="1", align_items="flex-start",
+        ),
+        spacing="3", align="start", width="100%",
+    )
+
+
+def _score_chip(label: str, value) -> rx.Component:
+    return rx.vstack(rx.text(label, color=MUTED, font_size="0.68rem", font_weight="700", letter_spacing="0.05em"), rx.text(value, "/5", color=INK, font_weight="700", font_size="0.9rem"), spacing="0", align_items="center")
+
+
+def review_summary(review: LookReview) -> rx.Component:
+    """Notas, pontos fortes e problemas de uma avaliação (Change 026)."""
+    return rx.vstack(
+        rx.hstack(
+            rx.center(rx.text(review.nota_geral, color=CHALK, font_weight="800", font_size="1.05rem"), background=INK, border_radius="14px", min_width="52px", height="52px", flex_shrink="0"),
+            rx.grid(
+                _score_chip("CLIMA", review.nota_clima), _score_chip("HARMONIA", review.nota_harmonia), _score_chip("OCASIÃO", review.nota_ocasiao),
+                _score_chip("CONFORTO", review.nota_conforto), _score_chip("ESTILO", review.nota_estilo),
+                columns={"initial": "3", "sm": "5"}, spacing="2", width="100%",
+            ),
+            spacing="3", align="center", width="100%",
+        ),
+        rx.cond(review.pontos_fortes != "", rx.text(rx.text.strong("Pontos fortes: "), review.pontos_fortes, color=INK, font_size="0.84rem", line_height="1.6")),
+        rx.cond(
+            review.problemas.length() > 0,
+            rx.vstack(
+                rx.foreach(review.problemas, lambda problem: rx.hstack(rx.icon("circle-alert", size=14, color=THREAD, flex_shrink="0", margin_top="3px"), rx.text(problem, color=INK, font_size="0.84rem"), spacing="2", align="start")),
+                spacing="1", width="100%",
+            ),
+        ),
+        spacing="2", width="100%", align_items="stretch",
+    )
+
+
+def swap_description(swap: LookSwap) -> rx.Component:
+    return rx.vstack(
+        rx.text(
+            rx.cond(swap.sai_nome != "", rx.fragment(swap.sai_nome, " → "), "Acrescentar: "),
+            rx.text.strong(swap.entra.nome),
+            color=INK, font_size="0.84rem",
+        ),
+        rx.hstack(rx.badge(swap.entra.origem_label, color_scheme=rx.match(swap.entra.origem, ("armario", "green"), ("catalogo", "amber"), "gray"), variant="soft", radius="full"), rx.text(swap.motivo, color=MUTED, font_size="0.78rem"), spacing="2", align="center", flex_wrap="wrap"),
+        spacing="1", align_items="flex-start", flex="1",
+    )
+
+
+def ai_swap_row(swap: LookSwap, proposal_id) -> rx.Component:
+    return rx.hstack(
+        swap_description(swap),
+        rx.cond(swap.aplicavel, rx.button("Aplicar", on_click=WardrobeLifeState.apply_ai_swap(proposal_id, swap.id), variant="outline", size="1", border_radius="100px")),
+        spacing="2", align="start", width="100%",
+    )
+
+
+def look_board_tile(piece: LookPiece) -> rx.Component:
+    return rx.box(
+        rx.cond(
+            piece.imagem_url != "",
+            rx.image(src=piece.imagem_url, alt=piece.nome, width="100%", height="100%", object_fit="contain"),
+            rx.center(rx.vstack(rx.icon("shirt", size=26, color=DENIM), rx.text(piece.nome, color=MUTED, font_size="0.7rem", text_align="center"), spacing="1", align="center"), width="100%", height="100%", padding="0.4rem"),
+        ),
+        position="relative", aspect_ratio="1", background="#FFFFFF", border_radius="12px", overflow="hidden",
+        border=rx.cond(piece.origem == "armario", "1px solid rgba(15,26,51,0.08)", "1px dashed rgba(233,162,59,0.7)"),
+    )
+
+
+def look_visual(proposal: LookProposal) -> rx.Component:
+    """Composição com as fotos reais das peças e, opcionalmente, a imagem gerada pelo Google (Change 027)."""
+    generated = rx.vstack(
+        rx.image(src=rx.get_upload_url(proposal.imagem_gerada), alt=f"Imagem gerada por IA do look {proposal.nome}", width="100%", border_radius="16px"),
+        rx.text("Imagem gerada por IA (Google Gemini, com marca d'água SynthID). As peças podem diferir das reais; confira o quadro com as fotos.", color=MUTED, font_size="0.72rem"),
+        spacing="1", width="100%",
+    )
+    return rx.vstack(
+        rx.cond(proposal.imagem_gerada != "", generated),
+        rx.grid(rx.foreach(proposal.pecas, look_board_tile), columns="4", spacing="2", width="100%", background="#F7F5EF", padding="0.5rem", border_radius="16px"),
+        rx.cond(
+            WardrobeLifeState.image_ai_enabled & (proposal.imagem_gerada == ""),
+            rx.button(
+                rx.icon("image", size=15), "Gerar imagem do look",
+                on_click=WardrobeLifeState.generate_look_image(proposal.id),
+                loading=WardrobeLifeState.image_loading_id == proposal.id,
+                disabled=(WardrobeLifeState.image_loading_id != "") & (WardrobeLifeState.image_loading_id != proposal.id),
+                variant="soft", size="2", border_radius="100px",
+            ),
+        ),
+        rx.cond(WardrobeLifeState.image_loading_id == proposal.id, rx.text("Gerando a imagem; pode levar até um minuto.", color=MUTED, font_size="0.76rem")),
+        spacing="2", width="100%", align_items="stretch",
+    )
+
+
+AI_FEEDBACK_REASONS = ["Não combina comigo", "Não serve para o clima", "Não serve para a ocasião", "Pouco confortável", "Já uso muito essas peças", "Outro motivo"]
+
+
+def ai_feedback_bar(proposal: LookProposal) -> rx.Component:
+    given = WardrobeLifeState.ai_feedback[proposal.id]
+    return rx.cond(
+        WardrobeLifeState.ai_feedback.contains(proposal.id),
+        rx.text(rx.cond(given == "positivo", "👍 Você gostou deste look.", "👎 Anotado: vamos evitar algo assim."), color=MUTED, font_size="0.82rem"),
+        rx.vstack(
+            rx.hstack(
+                rx.text("Este look combina com você?", color=INK, font_size="0.84rem", font_weight="600"),
+                rx.button("👍", on_click=WardrobeLifeState.send_ai_feedback(proposal.id, "positivo", ""), variant="soft", size="1", aria_label="Gostei"),
+                rx.button("👎", on_click=WardrobeLifeState.open_ai_feedback(proposal.id), variant="soft", size="1", aria_label="Não gostei"),
+                spacing="2", align="center", flex_wrap="wrap",
+            ),
+            rx.cond(
+                WardrobeLifeState.ai_feedback_open_id == proposal.id,
+                rx.hstack(
+                    rx.foreach(AI_FEEDBACK_REASONS, lambda reason: rx.button(reason, on_click=WardrobeLifeState.send_ai_feedback(proposal.id, "negativo", reason), variant="outline", size="1", border_radius="100px")),
+                    spacing="2", flex_wrap="wrap",
+                ),
+            ),
+            spacing="2", width="100%", align_items="start",
+        ),
+    )
+
+
+def ai_proposal_card(proposal: LookProposal) -> rx.Component:
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.heading(proposal.nome, font_family=DISPLAY, color=INK, font_size="1.1rem"),
+                rx.cond(proposal.conforto != "", rx.badge(proposal.conforto, variant="outline", radius="full")),
+                justify="between", align="center", width="100%", flex_wrap="wrap", spacing="2",
+            ),
+            rx.cond(proposal.descricao != "", rx.text(proposal.descricao, color=INK, font_size="0.88rem", line_height="1.6")),
+            look_visual(proposal),
+            rx.cond(proposal.precisa_pecas, rx.callout("Seu armário ainda não cobre este look sozinho; ele foi completado com sugestões.", icon="info", color="amber", size="1", width="100%")),
+            rx.vstack(rx.foreach(proposal.pecas, ai_piece_row), spacing="2", width="100%"),
+            rx.cond(proposal.paleta != "", rx.text(rx.text.strong("Cores: "), proposal.paleta, color=MUTED, font_size="0.82rem")),
+            rx.cond(proposal.tecidos != "", rx.text(rx.text.strong("Tecidos: "), proposal.tecidos, color=MUTED, font_size="0.82rem")),
+            rx.cond(
+                proposal.acessorios_sugeridos.length() > 0,
+                rx.vstack(
+                    rx.text("Acessórios sugeridos (opcionais)", color=INK, font_weight="700", font_size="0.82rem"),
+                    rx.hstack(rx.foreach(proposal.acessorios_sugeridos, lambda tip: rx.badge(tip, variant="soft", radius="full", color_scheme="gray")), spacing="2", flex_wrap="wrap"),
+                    spacing="1", width="100%", align_items="start",
+                ),
+            ),
+            rx.cond(proposal.justificativa_clima != "", rx.text(rx.text.strong("Clima: "), proposal.justificativa_clima, color=INK, font_size="0.85rem", line_height="1.6")),
+            rx.cond(proposal.justificativa_estilo != "", rx.text(rx.text.strong("Estilo e ocasião: "), proposal.justificativa_estilo, color=INK, font_size="0.85rem", line_height="1.6")),
+            rx.cond(
+                proposal.avaliacao.disponivel,
+                rx.box(
+                    rx.vstack(
+                        rx.text("Avaliação", color=INK, font_weight="700", font_size="0.9rem"),
+                        review_summary(proposal.avaliacao),
+                        rx.cond(
+                            proposal.avaliacao.trocas.length() > 0,
+                            rx.vstack(
+                                rx.text("Como melhorar", color=INK, font_weight="700", font_size="0.84rem"),
+                                rx.foreach(proposal.avaliacao.trocas, lambda swap: ai_swap_row(swap, proposal.id)),
+                                spacing="2", width="100%",
+                            ),
+                        ),
+                        spacing="2", width="100%", align_items="stretch",
+                    ),
+                    background="#F7F5EF", border_radius="16px", padding="0.85rem", width="100%",
+                ),
+            ),
+            rx.cond(
+                (proposal.fonte == "ia") & WardrobeLifeState.ai_personalization_on,
+                ai_feedback_bar(proposal),
+            ),
+            rx.hstack(
+                rx.button("Salvar em Meus Looks", on_click=WardrobeLifeState.save_ai_proposal(proposal.id), background=THREAD, color=INK, border_radius="100px", font_weight="700", size="2"),
+                rx.cond(
+                    WardrobeLifeState.ai_saved_inspirations.contains(proposal.id),
+                    rx.link(rx.hstack(rx.icon("bookmark-check", size=15), rx.text("Nas suas inspirações"), spacing="1", align="center"), href="/inspiracao", color=DENIM, font_weight="700", font_size="0.85rem"),
+                    rx.button(rx.icon("bookmark", size=15), "Guardar inspiração", on_click=WardrobeLifeState.save_ai_inspiration(proposal.id), variant="outline", size="2", border_radius="100px"),
+                ),
+                spacing="2", flex_wrap="wrap", align="center",
+            ),
+            spacing="3", width="100%", align_items="stretch",
+        ),
+        background="#FFFFFF", border="1px solid rgba(15,26,51,0.08)", border_radius="22px", padding="1.2rem", width="100%",
+    )
+
+
+def ai_stylist_section() -> rx.Component:
+    return rx.vstack(
+        rx.box(
+            rx.vstack(
+                rx.hstack(rx.icon("sparkles", size=20, color=THREAD), rx.heading("Estilista com IA", font_family=DISPLAY, color=INK, font_size="1.3rem"), spacing="2", align="center"),
+                rx.text("Looks completos com justificativa, usando o clima acima, a ocasião, seu estilo e as peças disponíveis no armário.", color=MUTED, font_size="0.88rem"),
+                _label("Algo a considerar? (opcional)"),
+                rx.input(placeholder="Ex.: reunião com cliente, vou de metrô", value=WardrobeLifeState.ai_note, on_change=WardrobeLifeState.set_ai_note, max_length=stylist.MAX_NOTE_LENGTH, width="100%"),
+                rx.button(rx.icon("sparkles", size=16), "Gerar looks", on_click=WardrobeLifeState.generate_ai_looks, loading=WardrobeLifeState.ai_loading, background=INK, color=CHALK, border_radius="100px", font_weight="700"),
+                rx.cond(WardrobeLifeState.ai_loading, rx.text("Montando as combinações; isso pode levar alguns segundos.", color=MUTED, font_size="0.8rem")),
+                spacing="2", width="100%", align_items="stretch",
+            ),
+            background="#FFFFFF", border="1px solid rgba(15,26,51,0.08)", border_radius="22px", padding="1.3rem", width="100%",
+        ),
+        rx.cond(WardrobeLifeState.ai_error != "", rx.callout(WardrobeLifeState.ai_error, icon="triangle-alert", color="red", width="100%")),
+        rx.cond(WardrobeLifeState.ai_notice != "", rx.callout(WardrobeLifeState.ai_notice, icon="info", width="100%")),
+        rx.cond(
+            WardrobeLifeState.ai_proposals.length() > 0,
+            rx.grid(rx.foreach(WardrobeLifeState.ai_proposals, ai_proposal_card), columns={"initial": "1", "md": "2"}, spacing="3", width="100%"),
+        ),
+        spacing="3", width="100%", align_items="stretch",
+    )
+
+
 def daily_look_page() -> rx.Component:
     controls = rx.box(rx.vstack(rx.heading("Seu contexto", font_family=DISPLAY, color=INK, font_size="1.3rem"), rx.grid(rx.vstack(_label("Clima previsto"), rx.select(["Quente", "Ameno", "Frio", "Chuvoso"], value=WardrobeLifeState.daily_weather, on_change=WardrobeLifeState.set_daily_weather, width="100%"), spacing="1", width="100%", align_items="stretch"), rx.vstack(_label("Ocasião"), rx.select(LOOK_OCCASIONS, value=WardrobeLifeState.daily_occasion, on_change=WardrobeLifeState.set_daily_occasion, width="100%"), spacing="1", width="100%", align_items="stretch"), columns={"initial":"1","sm":"2"}, spacing="3", width="100%"), rx.button("Criar combinação", on_click=WardrobeLifeState.load_daily_look, loading=WardrobeLifeState.experience_loading, background=INK, color=CHALK, border_radius="100px", font_weight="700"), spacing="3", width="100%", align_items="stretch"), background="#FFFFFF", border="1px solid rgba(15,26,51,0.08)", border_radius="22px", padding="1.3rem", width="100%")
     results = rx.cond(WardrobeLifeState.daily_suggestions.length() > 0, rx.vstack(rx.grid(rx.foreach(WardrobeLifeState.daily_suggestions, life_garment_card), columns={"initial":"1","sm":"2","lg":"4"}, spacing="3", width="100%"), rx.hstack(rx.button("Salvar em Meus Looks", on_click=WardrobeLifeState.save_daily_look, background=THREAD, color=INK, border_radius="100px", font_weight="700"), rx.link("Planejar no calendário", href="/calendario", color=DENIM, font_weight="700"), spacing="4", flex_wrap="wrap"), spacing="3", width="100%"), rx.center(rx.vstack(rx.icon("shirt", size=34, color=DENIM), rx.text("Seu armário ainda precisa de peças para sugerir um look.", color=MUTED), rx.link("Cadastrar peças", href="/armario", color=DENIM, font_weight="700"), spacing="3", align="center"), width="100%", min_height="170px", background="#FFFFFF", border_radius="20px"))
-    return wardrobe_life_shell("Estilo para hoje", "Uma combinação começa no seu armário.", "Escolha o clima e a ocasião. A sugestão usa as peças disponíveis que você cadastrou; a previsão não é consultada automaticamente.", rx.vstack(controls, rx.cond(WardrobeLifeState.experience_notice != "", rx.text(WardrobeLifeState.experience_notice, color=MUTED)), results, spacing="4", width="100%", align_items="stretch"))
+    return wardrobe_life_shell("Estilo para hoje", "Uma combinação começa no seu armário.", "A previsão real da cidade do seu endereço padrão sugere o clima; você pode trocar a cidade ou ajustar o clima manualmente. A sugestão usa as peças disponíveis que você cadastrou.", rx.vstack(weather_context_card(), controls, ai_stylist_section(), rx.cond(WardrobeLifeState.experience_notice != "", rx.text(WardrobeLifeState.experience_notice, color=MUTED)), results, spacing="4", width="100%", align_items="stretch"))
 
 
 def loyalty_page() -> rx.Component:
@@ -5728,7 +6496,7 @@ def privacy_page() -> rx.Component:
         rx.heading("Quais dados podem ser tratados", font_family=DISPLAY, color=INK, font_size="1.2rem"),
         rx.text("Conta: nome, e-mail, telefone e credencial protegida por hash. O perfil também pode conter data de nascimento, pronome, estilo, tamanhos, cores favoritas e uma nota pessoal; esses campos são opcionais. Uso do produto: endereços, peças do armário, fotos enviadas ou links de imagem, looks, calendário, desafios, registros de uso e viagens. Favoritos do catálogo ficam no armazenamento local do navegador, separados pela conta selecionada. No modo SQLite, fotos enviadas ficam associadas à peça no banco local e são retornadas apenas em consultas autenticadas; no modo Xano, use links HTTPS. Comércio: endereço de entrega, itens, total, estado do pedido e referência de pagamento. Comunidade: depoimentos enviados e autorização de publicação. Privacidade: solicitações feitas por você.", color=MUTED, line_height="1.7"),
         rx.heading("Para que usamos", font_family=DISPLAY, color=INK, font_size="1.2rem"),
-        rx.text("Os dados são usados para autenticar a conta, salvar seus recursos, responder a pedidos, manter segurança e operar a loja. As preferências opcionais ficam no perfil para consulta da própria pessoa; as sugestões de look atuais usam as peças cadastradas, o clima e a ocasião escolhidos por você. O app não usa GPS para essa recomendação.", color=MUTED, line_height="1.7"),
+        rx.text("Os dados são usados para autenticar a conta, salvar seus recursos, responder a pedidos, manter segurança e operar a loja. As preferências opcionais ficam no perfil para consulta da própria pessoa; as sugestões de look usam as peças cadastradas, a ocasião escolhida e o clima. Para consultar a previsão, o servidor envia ao serviço Open-Meteo apenas a cidade e a UF do seu endereço padrão (ou da cidade que você digitar); rua, número, CEP e dados da conta não são enviados. Quando o estilista com IA está ativo, o servidor envia ao Google (API Gemini) a cidade/UF e a previsão, a ocasião, a observação opcional que você digitar e o nome, a categoria, a cor e a estação das peças disponíveis, além de produtos da loja e dos looks que você salvou recentemente (só as peças). Com a personalização ativa no perfil (padrão), também vão o estilo preferido, as cores favoritas, quais peças você mais e menos usa e suas avaliações 👍/👎 com o motivo escolhido; você pode desligar isso e apagar o histórico de avaliações no perfil a qualquer momento. As avaliações só são gravadas quando você clica nos botões. Nome, e-mail, endereço, tamanhos e fotos não são enviados. No plano gratuito da API Gemini, o Google informa que o conteúdo enviado pode ser usado para melhorar os produtos dele; por isso, evite escrever dados pessoais no campo de observação. A geração de imagens fica desativada por padrão; se a instância ativá-la e você pedir a imagem de um look, o servidor envia ao Google a descrição das peças e as fotos delas como referência, e a imagem gerada fica guardada no servidor da instância. O app não usa GPS para essa recomendação.", color=MUTED, line_height="1.7"),
         rx.heading("Compartilhamento e ambientes", font_family=DISPLAY, color=INK, font_size="1.2rem"),
         rx.text("No modo SQLite, os dados ficam no banco local configurado pelo operador da instância. No modo Xano, os dados dependem dos endpoints publicados no workspace. Se o checkout real estiver configurado, o servidor envia ao Mercado Pago os itens, valores, e-mail e referência necessários; o app não coleta nem armazena números de cartão. SMTP pode ser usado para e-mails de recuperação quando configurado. Os serviços têm seus próprios termos e avisos de privacidade.", color=MUTED, line_height="1.7"),
         rx.heading("Seus controles", font_family=DISPLAY, color=INK, font_size="1.2rem"),
@@ -6732,6 +7500,19 @@ def profile_edit_card() -> rx.Component:
                 field("Cores que você gosta", value=AuthState.profile_colors_draft, on_change=AuthState.set_profile_colors_draft, placeholder="Ex.: azul, verde e tons neutros"),
                 columns={"initial": "1", "sm": "2"}, spacing="3", width="100%",
             ),
+            rx.box(
+                rx.vstack(
+                    rx.hstack(
+                        rx.switch(checked=AuthState.profile_ai_personalization_draft, on_change=AuthState.set_profile_ai_personalization_draft),
+                        rx.text("Personalizar o estilista com IA", color=INK, font_weight="700", font_size="0.9rem"),
+                        spacing="2", align="center",
+                    ),
+                    rx.text("Quando ativo, o estilista usa seu estilo, suas cores favoritas, as peças que você mais e menos usa e suas avaliações 👍/👎 dos looks. Desligado, ele usa só o clima, a ocasião e as peças disponíveis, e os botões de avaliação somem. Tamanhos não são enviados. Salve o perfil para aplicar.", color=MUTED, font_size="0.82rem", line_height="1.6"),
+                    rx.button("Apagar meu histórico de avaliações", on_click=AuthState.clear_ai_feedback, variant="ghost", color_scheme="red", size="1"),
+                    spacing="2", width="100%", align_items="start",
+                ),
+                background="#F7F5EF", border_radius="16px", padding="0.85rem", width="100%",
+            ),
             rx.text("Tamanhos · opcionais", color=INK, font_weight="700", font_size="0.9rem"),
             rx.grid(
                 field("Parte de cima", value=AuthState.profile_top_size_draft, on_change=AuthState.set_profile_top_size_draft, placeholder="Ex.: M"),
@@ -7405,6 +8186,12 @@ def look_card(look: dict) -> rx.Component:
                 rx.text(look["garment_count"] + " peças", color=DENIM, font_size="0.78rem", font_weight="700"),
                 rx.spacer(),
                 rx.button(
+                    rx.icon("sparkles", size=14), "Avaliar com IA",
+                    on_click=LookState.evaluate_look(look["id"]),
+                    loading=LookState.review_loading & (LookState.review_look_id == look["id"]),
+                    variant="soft", size="1", border_radius="100px",
+                ),
+                rx.button(
                     rx.icon("trash-2", size=15),
                     on_click=LookState.delete_look(look["id"]),
                     variant="ghost",
@@ -7426,6 +8213,58 @@ def look_card(look: dict) -> rx.Component:
         width="100%",
         transition="transform 180ms ease, box-shadow 180ms ease",
         _hover={"transform": "translateY(-2px)", "box_shadow": "0 12px 30px rgba(15,26,51,0.08)"},
+    )
+
+
+def manual_swap_row(swap: LookSwap) -> rx.Component:
+    selectable = swap.aplicavel & (swap.entra.origem == "armario")
+    return rx.hstack(
+        rx.cond(
+            selectable,
+            rx.checkbox(checked=LookState.review_selected_swaps.contains(swap.id), on_change=lambda _checked: LookState.toggle_review_swap(swap.id)),
+            rx.icon("lightbulb", size=16, color=THREAD),
+        ),
+        swap_description(swap),
+        rx.cond(swap.entra.origem == "catalogo", rx.link("Ver na loja", href=f"/produto?id={swap.entra.ref}", color=DENIM, font_size="0.78rem", font_weight="700", white_space="nowrap")),
+        spacing="3", align="start", width="100%",
+    )
+
+
+def manual_review_panel() -> rx.Component:
+    review = LookState.look_review
+    return rx.cond(
+        LookState.review_look_id != "",
+        rx.box(
+            rx.vstack(
+                rx.hstack(
+                    rx.hstack(rx.icon("sparkles", size=18, color=THREAD), rx.heading("Avaliação: ", LookState.review_look_name, font_family=DISPLAY, color=INK, font_size="1.1rem"), spacing="2", align="center"),
+                    rx.spacer(),
+                    rx.button(rx.icon("x", size=15), on_click=LookState.close_review, variant="ghost", color=MUTED, aria_label="Fechar avaliação"),
+                    width="100%", align="center",
+                ),
+                rx.cond(LookState.review_loading, rx.hstack(rx.spinner(), rx.text("Avaliando o look com o clima de agora...", color=MUTED), spacing="2", align="center")),
+                rx.cond(LookState.review_error != "", rx.callout(LookState.review_error, icon="triangle-alert", color="red", width="100%")),
+                rx.cond(
+                    review.disponivel,
+                    rx.vstack(
+                        review_summary(review),
+                        rx.cond(
+                            review.trocas.length() > 0,
+                            rx.vstack(
+                                rx.text("Trocas sugeridas", color=INK, font_weight="700", font_size="0.9rem"),
+                                rx.foreach(review.trocas, manual_swap_row),
+                                rx.button("Salvar versão ajustada", on_click=LookState.save_adjusted_look, background=THREAD, color=INK, border_radius="100px", font_weight="700", size="2"),
+                                rx.text("A versão ajustada é salva como um novo look; o original continua na lista.", color=MUTED, font_size="0.76rem"),
+                                spacing="2", width="100%", align_items="stretch",
+                            ),
+                        ),
+                        spacing="3", width="100%", align_items="stretch",
+                    ),
+                ),
+                spacing="3", width="100%", align_items="stretch",
+            ),
+            background="#FFFFFF", border="1px solid rgba(233,162,59,0.45)", border_radius="20px", padding="1.15rem", width="100%",
+        ),
     )
 
 
@@ -7481,6 +8320,7 @@ def looks_page() -> rx.Component:
             rx.link("Abrir calendário", href="/calendario", color=DENIM, font_weight="700", font_size="0.85rem"),
             width="100%", align="center", wrap="wrap",
         ),
+        manual_review_panel(),
         rx.cond(
             LookState.look_cards.length() == 0,
             rx.center(rx.vstack(rx.icon("sparkles", size=34, color=THREAD), rx.text("Seu primeiro look começa com uma peça favorita.", color=INK, text_align="center", font_weight="600"), spacing="3", align="center"), background="#FFFFFF", border="1px dashed rgba(31,53,96,0.24)", border_radius="20px", padding="2rem", width="100%"),
@@ -8184,11 +9024,386 @@ def challenge_card(challenge: dict) -> rx.Component:
     )
 
 
+@dataclasses.dataclass
+class InspirationPiece:
+    papel: str = ""
+    nome: str = ""
+    descricao: str = ""
+    origem: str = ""
+    imagem_url: str = ""
+
+
+@dataclasses.dataclass
+class Inspiration:
+    id: str = ""
+    nome: str = ""
+    ocasiao: str = ""
+    clima: str = ""
+    regiao: str = ""
+    estacao: str = ""
+    paleta: str = ""
+    tecidos: str = ""
+    justificativa: str = ""
+    nota: str = ""
+    imagem: str = ""
+    capa_catalogo: str = ""
+    status: str = ""
+    salvo: bool = False
+    pecas: list[InspirationPiece] = dataclasses.field(default_factory=list)
+
+
+INSPIRATION_FILTER_OCCASIONS = ["Todas", *LOOK_OCCASIONS]
+INSPIRATION_FILTER_WEATHER = ["Todos", "Quente", "Ameno", "Frio", "Chuvoso"]
+INSPIRATION_FILTER_REGIONS = ["Todas", "Norte", "Nordeste", "Centro-Oeste", "Sudeste", "Sul"]
+
+
+class InspirationState(AuthState):
+    """Feed de inspirações: looks da IA guardados, publicados e moderados (Change 028)."""
+
+    feed: list[Inspiration] = []
+    my_created: list[Inspiration] = []
+    my_saved: list[Inspiration] = []
+    admin_inspirations: list[Inspiration] = []
+    feed_tab: str = "descobrir"
+    filter_occasion: str = "Todas"
+    filter_weather: str = "Todos"
+    filter_region: str = "Todas"
+    feed_page: int = 1
+    feed_has_more: bool = False
+    feed_loading: bool = False
+    feed_error: str = ""
+    feed_notice: str = ""
+    publish_candidate_id: str = ""
+
+    @staticmethod
+    def _to_inspiration(row: dict) -> Inspiration:
+        pieces = [
+            InspirationPiece(
+                papel=str(p.get("papel") or ""), nome=str(p.get("nome") or ""), descricao=str(p.get("descricao") or ""),
+                origem=str(p.get("origem") or ""), imagem_url=str(p.get("imagem_url") or ""),
+            )
+            for p in (row.get("pecas") or []) if isinstance(p, dict)
+        ]
+        return Inspiration(
+            id=str(row.get("id") or ""), nome=str(row.get("nome") or "Look"), ocasiao=str(row.get("ocasiao") or ""),
+            clima=str(row.get("clima") or ""), regiao=str(row.get("regiao") or ""), estacao=str(row.get("estacao") or ""),
+            paleta=str(row.get("paleta") or ""), tecidos=str(row.get("tecidos") or ""),
+            justificativa=str(row.get("justificativa") or ""), nota=str(row.get("nota") or ""),
+            imagem=str(row.get("imagem") or ""),
+            capa_catalogo=next((p.imagem_url for p in pieces if p.imagem_url), ""),
+            status=str(row.get("status") or ""), salvo=bool(row.get("salvo")), pecas=pieces,
+        )
+
+    async def _feed_request(self, method: str, endpoint: str, *, payload: dict | None = None, params: dict | None = None):
+        token = self._current_auth_token()
+        async with XanoAsyncClient(timeout=XANO_TIMEOUT) as client:
+            return await client.request(
+                method, f"{XANO_PDB}/{endpoint}",
+                headers={"Authorization": f"Bearer {token}"} if token else {},
+                json=payload, params=params,
+            )
+
+    def _feed_params(self) -> dict:
+        params = {"pagina": self.feed_page}
+        if self.filter_occasion in LOOK_OCCASIONS:
+            params["ocasiao"] = self.filter_occasion
+        if self.filter_weather in INSPIRATION_FILTER_WEATHER[1:]:
+            params["clima"] = self.filter_weather
+        if self.filter_region in INSPIRATION_FILTER_REGIONS[1:]:
+            params["regiao"] = self.filter_region
+        return params
+
+    async def load_feed(self, append: bool = False):
+        self.feed_loading = True
+        self.feed_error = ""
+        try:
+            response = await self._feed_request("GET", "feedInspiracoes", params=self._feed_params())
+            response.raise_for_status()
+            data = response.json()
+            rows = [self._to_inspiration(r) for r in data.get("inspiracoes", []) if isinstance(r, dict)]
+            saved_ids = {item.id for item in self.my_saved}
+            for item in rows:
+                item.salvo = item.id in saved_ids
+            self.feed = [*self.feed, *rows] if append else rows
+            self.feed_has_more = bool(data.get("tem_mais"))
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível carregar o feed de inspirações agora.")
+        finally:
+            self.feed_loading = False
+
+    async def load_mine(self):
+        if not self._current_auth_token():
+            self.my_created, self.my_saved = [], []
+            return
+        try:
+            response = await self._feed_request("GET", "minhasInspiracoes")
+            response.raise_for_status()
+            data = response.json()
+            self.my_created = [self._to_inspiration(r) for r in data.get("criadas", []) if isinstance(r, dict)]
+            self.my_saved = [self._to_inspiration(r) for r in data.get("salvas", []) if isinstance(r, dict)]
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível carregar suas inspirações agora.")
+
+    async def load_inspiration_page(self):
+        await self.restore_session()
+        self.feed_page = 1
+        await self.load_mine()
+        await self.load_feed()
+
+    def set_feed_tab(self, value: str | list[str]):
+        value = value[0] if isinstance(value, list) and value else value
+        if isinstance(value, str) and value in {"descobrir", "minhas"}:
+            self.feed_tab = value
+
+    async def _apply_filter(self):
+        self.feed_page = 1
+        await self.load_feed()
+
+    async def set_filter_occasion(self, value: str):
+        if value in INSPIRATION_FILTER_OCCASIONS:
+            self.filter_occasion = value
+            await self._apply_filter()
+
+    async def set_filter_weather(self, value: str):
+        if value in INSPIRATION_FILTER_WEATHER:
+            self.filter_weather = value
+            await self._apply_filter()
+
+    async def set_filter_region(self, value: str):
+        if value in INSPIRATION_FILTER_REGIONS:
+            self.filter_region = value
+            await self._apply_filter()
+
+    async def load_more(self):
+        if self.feed_has_more and not self.feed_loading:
+            self.feed_page += 1
+            await self.load_feed(append=True)
+
+    async def toggle_saved(self, inspiration_id: str, saved: bool):
+        if not self._current_auth_token():
+            return rx.redirect("/login")
+        if not inspiration_id.isdigit():
+            return
+        try:
+            response = await self._feed_request("DELETE" if saved else "POST", f"inspiracoesSalvas/{inspiration_id}")
+            response.raise_for_status()
+            self.feed = [dataclasses.replace(i, salvo=not saved) if i.id == inspiration_id else i for i in self.feed]
+            await self.load_mine()
+            self.feed_notice = "Removida dos salvos." if saved else "Salva nas suas inspirações."
+        except (httpx.HTTPError, ValueError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível atualizar seus salvos.")
+
+    def ask_publish(self, inspiration_id: str):
+        self.publish_candidate_id = inspiration_id
+
+    def cancel_publish(self):
+        self.publish_candidate_id = ""
+
+    async def confirm_publish(self):
+        inspiration_id = self.publish_candidate_id
+        self.publish_candidate_id = ""
+        if not inspiration_id.isdigit():
+            return
+        try:
+            response = await self._feed_request("POST", f"publicarInspiracao/{inspiration_id}", payload={"autorizo_publicacao": True})
+            response.raise_for_status()
+            self.feed_notice = "Enviada para revisão. Ela aparece no feed depois de aprovada."
+            await self.load_mine()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível enviar ao feed.")
+
+    async def delete_inspiration(self, inspiration_id: str):
+        if not inspiration_id.isdigit():
+            return
+        try:
+            response = await self._feed_request("DELETE", f"minhasInspiracoes/{inspiration_id}")
+            response.raise_for_status()
+            self.feed_notice = "Inspiração excluída."
+            await self.load_mine()
+            await self.load_feed()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível excluir a inspiração.")
+
+    async def load_admin_inspirations(self):
+        status = await self._session_gate()
+        if status == "login":
+            return rx.redirect("/login")
+        try:
+            response = await self._feed_request("GET", "adminInspiracoes")
+            response.raise_for_status()
+            self.admin_inspirations = [self._to_inspiration(r) for r in response.json().get("inspiracoes", []) if isinstance(r, dict)]
+            self.feed_error = ""
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível carregar a fila de inspirações. Acesse com papel admin.")
+
+    async def moderate_inspiration(self, inspiration_id: str, status: str):
+        if status not in {"Publicado", "Recusado"} or not inspiration_id.isdigit():
+            return
+        try:
+            response = await self._feed_request("PATCH", f"adminInspiracoes/{inspiration_id}", payload={"status": status})
+            response.raise_for_status()
+            self.feed_notice = "Inspiração atualizada."
+            await self.load_admin_inspirations()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.feed_error = _xano_failure_message(exc, "Não foi possível moderar a inspiração.")
+
+
+def inspiration_cover(item: Inspiration) -> rx.Component:
+    return rx.cond(
+        item.imagem != "",
+        rx.image(src=rx.get_upload_url(item.imagem), alt=f"Imagem gerada por IA do look {item.nome}", width="100%", height="280px", object_fit="cover"),
+        rx.cond(
+            item.capa_catalogo != "",
+            rx.center(rx.image(src=item.capa_catalogo, alt=item.nome, height="200px", object_fit="contain"), width="100%", height="280px", background="#F3F0E8"),
+            rx.center(rx.icon("sparkles", size=40, color=THREAD), width="100%", height="280px", background=f"linear-gradient(140deg, {INK}, {DENIM})"),
+        ),
+    )
+
+
+def inspiration_feed_card(item: Inspiration, owner: bool = False, admin: bool = False) -> rx.Component:
+    chips = rx.hstack(
+        rx.badge(item.ocasiao, color_scheme="amber", variant="soft", radius="full"),
+        rx.cond(item.clima != "", rx.badge(item.clima, variant="soft", radius="full")),
+        rx.cond(item.regiao != "", rx.badge(item.regiao, variant="outline", radius="full")),
+        rx.cond(item.nota != "", rx.badge(rx.icon("star", size=11), item.nota, color_scheme="green", variant="soft", radius="full")),
+        spacing="1", flex_wrap="wrap",
+    )
+    pieces = rx.vstack(
+        rx.foreach(item.pecas, lambda p: rx.text(rx.text.strong(p.papel, ": "), p.nome, color=INK, font_size="0.8rem")),
+        spacing="0", width="100%",
+    )
+    if admin:
+        actions = rx.cond(
+            item.status == "Pendente",
+            rx.hstack(
+                rx.button("Publicar", on_click=InspirationState.moderate_inspiration(item.id, "Publicado"), background=OK, color="white", border_radius="100px", size="2"),
+                rx.button("Recusar", on_click=InspirationState.moderate_inspiration(item.id, "Recusado"), variant="outline", color=ERROR, border_radius="100px", size="2"),
+                spacing="2",
+            ),
+            rx.badge(item.status, variant="soft"),
+        )
+    elif owner:
+        actions = rx.hstack(
+            rx.badge(rx.match(item.status, ("Privado", "Só para você"), ("Pendente", "Em revisão"), ("Publicado", "No feed"), ("Recusado", "Não aprovada"), item.status), color_scheme=rx.match(item.status, ("Publicado", "green"), ("Recusado", "red"), ("Pendente", "amber"), "gray"), variant="soft"),
+            rx.spacer(),
+            rx.cond((item.status == "Privado") | (item.status == "Recusado"), rx.button(rx.icon("send", size=14), "Enviar ao feed", on_click=InspirationState.ask_publish(item.id), variant="soft", size="1", border_radius="100px")),
+            rx.button(rx.icon("trash-2", size=14), on_click=InspirationState.delete_inspiration(item.id), variant="ghost", color=MUTED, size="1", aria_label="Excluir inspiração"),
+            width="100%", align="center",
+        )
+    else:
+        actions = rx.button(
+            rx.cond(item.salvo, rx.icon("bookmark-check", size=15), rx.icon("bookmark", size=15)),
+            rx.cond(item.salvo, "Salva", "Salvar"),
+            on_click=InspirationState.toggle_saved(item.id, item.salvo),
+            variant=rx.cond(item.salvo, "solid", "outline"), size="2", border_radius="100px",
+        )
+    return rx.box(
+        inspiration_cover(item),
+        rx.vstack(
+            rx.heading(item.nome, font_family=DISPLAY, color=INK, font_size="1.05rem"),
+            chips,
+            pieces,
+            rx.cond(item.justificativa != "", rx.text(item.justificativa, color=MUTED, font_size="0.8rem", line_height="1.55", style={"display": "-webkit-box", "WebkitLineClamp": "4", "WebkitBoxOrient": "vertical", "overflow": "hidden"})),
+            rx.cond(item.imagem != "", rx.text("Imagem gerada por IA (Google Gemini, com marca d'água SynthID).", color=MUTED, font_size="0.7rem")),
+            actions,
+            spacing="2", padding="1rem", width="100%", align_items="stretch",
+        ),
+        background="#FFFFFF", border="1px solid rgba(15,26,51,0.08)", border_radius="20px", overflow="hidden", width="100%",
+    )
+
+
+def inspiration_feed_section() -> rx.Component:
+    filters = rx.grid(
+        rx.select(INSPIRATION_FILTER_OCCASIONS, value=InspirationState.filter_occasion, on_change=InspirationState.set_filter_occasion, aria_label="Filtrar por ocasião"),
+        rx.select(INSPIRATION_FILTER_WEATHER, value=InspirationState.filter_weather, on_change=InspirationState.set_filter_weather, aria_label="Filtrar por clima"),
+        rx.select(INSPIRATION_FILTER_REGIONS, value=InspirationState.filter_region, on_change=InspirationState.set_filter_region, aria_label="Filtrar por região"),
+        columns={"initial": "1", "sm": "3"}, spacing="2", width="100%",
+    )
+    discover = rx.vstack(
+        filters,
+        rx.cond(
+            InspirationState.feed.length() > 0,
+            rx.grid(rx.foreach(InspirationState.feed, lambda i: inspiration_feed_card(i)), columns={"initial": "1", "sm": "2", "lg": "3"}, spacing="4", width="100%"),
+            rx.cond(~InspirationState.feed_loading, rx.center(rx.text("Ainda não há looks no feed com esses filtros. Gere um look no Look do Dia e compartilhe!", color=MUTED, text_align="center"), padding="2rem", width="100%", background="#FFFFFF", border_radius="20px")),
+        ),
+        rx.cond(InspirationState.feed_has_more, rx.button("Carregar mais", on_click=InspirationState.load_more, loading=InspirationState.feed_loading, variant="outline", border_radius="100px", align_self="center")),
+        spacing="4", width="100%", align_items="stretch",
+    )
+    publish_confirm = rx.cond(
+        InspirationState.publish_candidate_id != "",
+        rx.callout(
+            rx.vstack(
+                rx.text("Ao enviar, este look entra na fila de revisão e, se aprovado, aparece no feed público sem o seu nome. Fotos do seu armário nunca são publicadas; a imagem gerada por IA e as descrições das peças, sim.", font_size="0.85rem"),
+                rx.hstack(
+                    rx.button("Autorizo a publicação anônima", on_click=InspirationState.confirm_publish, background=INK, color=CHALK, border_radius="100px", size="2"),
+                    rx.button("Cancelar", on_click=InspirationState.cancel_publish, variant="ghost", size="2"),
+                    spacing="2", flex_wrap="wrap",
+                ),
+                spacing="2", align_items="flex-start",
+            ),
+            icon="send", color="amber", width="100%",
+        ),
+    )
+    mine = rx.cond(
+        InspirationState.is_authenticated,
+        rx.vstack(
+            publish_confirm,
+            rx.heading("Criadas por você", font_family=DISPLAY, color=INK, font_size="1.2rem"),
+            rx.cond(
+                InspirationState.my_created.length() > 0,
+                rx.grid(rx.foreach(InspirationState.my_created, lambda i: inspiration_feed_card(i, owner=True)), columns={"initial": "1", "sm": "2", "lg": "3"}, spacing="4", width="100%"),
+                rx.text("Guarde um look gerado no Look do Dia para vê-lo aqui.", color=MUTED),
+            ),
+            rx.heading("Salvas do feed", font_family=DISPLAY, color=INK, font_size="1.2rem"),
+            rx.cond(
+                InspirationState.my_saved.length() > 0,
+                rx.grid(rx.foreach(InspirationState.my_saved, lambda i: inspiration_feed_card(i)), columns={"initial": "1", "sm": "2", "lg": "3"}, spacing="4", width="100%"),
+                rx.text("Use o botão Salvar nos looks do feed.", color=MUTED),
+            ),
+            spacing="3", width="100%", align_items="stretch",
+        ),
+        rx.callout(rx.hstack(rx.text("Entre na sua conta para guardar e compartilhar inspirações."), rx.link("Entrar", href="/login", font_weight="700"), spacing="2"), icon="log-in", width="100%"),
+    )
+    return rx.vstack(
+        rx.hstack(
+            rx.vstack(rx.heading("Feed de looks", font_family=DISPLAY, color=INK, font_size="1.6rem"), rx.text("Combinações criadas com o estilista de IA e compartilhadas pela comunidade.", color=MUTED, font_size="0.9rem"), spacing="1", align_items="flex-start"),
+            rx.spacer(),
+            rx.link("Criar um look", href="/look-do-dia", background=INK, color=CHALK, padding="0.65rem 1.1rem", border_radius="100px", font_weight="700", font_size="0.85rem"),
+            width="100%", align="center", flex_wrap="wrap", spacing="3",
+        ),
+        rx.segmented_control.root(
+            rx.segmented_control.item("Descobrir", value="descobrir"),
+            rx.segmented_control.item("Minhas inspirações", value="minhas"),
+            value=InspirationState.feed_tab, on_change=InspirationState.set_feed_tab,
+        ),
+        rx.cond(InspirationState.feed_error != "", rx.callout(InspirationState.feed_error, icon="triangle-alert", color="red", width="100%")),
+        rx.cond(InspirationState.feed_notice != "", rx.callout(InspirationState.feed_notice, icon="info", color="green", width="100%")),
+        rx.cond(InspirationState.feed_tab == "descobrir", discover, mine),
+        spacing="4", width="100%", align_items="stretch",
+    )
+
+
+def admin_inspirations_page() -> rx.Component:
+    body = rx.cond(
+        InspirationState.admin_inspirations.length() > 0,
+        rx.grid(rx.foreach(InspirationState.admin_inspirations, lambda i: inspiration_feed_card(i, admin=True)), columns={"initial": "1", "md": "2", "lg": "3"}, spacing="4", width="100%"),
+        rx.callout("Não há inspirações para revisar.", icon="badge-check", color="green", width="100%"),
+    )
+    return rx.box(rx.el.style(CSS), management_navbar(), rx.center(rx.vstack(
+        rx.heading("Revisão de inspirações", font_family=DISPLAY, color=INK, font_size="2rem"),
+        rx.text("Publique apenas looks adequados ao público. Confira se a imagem gerada não traz pessoas, texto ou conteúdo impróprio.", color=MUTED),
+        rx.cond(InspirationState.feed_error != "", rx.callout(InspirationState.feed_error, icon="triangle-alert", color="red", width="100%")),
+        rx.cond(InspirationState.feed_notice != "", rx.callout(InspirationState.feed_notice, icon="info", color="green", width="100%")),
+        body, spacing="4", width="100%", max_width="1180px", padding_y="2rem", padding_x="1rem", align_items="stretch",
+    ), width="100%"), min_height="100vh", background="#F7F5EF", font_family=BODY)
+
+
 def inspiration_page() -> rx.Component:
     return rx.box(
         rx.el.style(CSS), store_navbar(),
         rx.center(rx.vstack(
             rx.box(rx.vstack(rx.text("INSPIRAÇÃO", color=THREAD, font_weight="800", font_size="0.72rem", letter_spacing="0.15em"), rx.heading("Vista o seu dia.", font_family=DISPLAY, color=CHALK, font_size=["2.3rem", "3.5rem"]), rx.text("Ideias para encontrar novas combinações dentro do seu próprio armário.", color="rgba(248,249,250,0.8)", max_width="620px", line_height="1.6"), spacing="3", align_items="flex-start"), width="100%", padding=["1.5rem", "2.4rem"], background=f"linear-gradient(120deg, {INK}, {DENIM})", border_radius="24px"),
+            inspiration_feed_section(),
             rx.grid(rx.foreach(INSPIRATION_IDEAS, inspiration_card), columns={"initial": "1", "md": "3"}, spacing="4", width="100%"),
             rx.hstack(rx.vstack(rx.heading("Uma ideia para levar com você", font_family=DISPLAY, color=INK), rx.text("Experimente um desafio leve ou leia uma dica de cuidado.", color=MUTED), spacing="1", align_items="flex-start"), rx.spacer(), rx.link("Ver desafios", href="/desafios", background=INK, color=CHALK, padding="0.8rem 1.2rem", border_radius="100px", font_weight="700"), rx.link("Ler artigos", href="/artigos", color=DENIM, font_weight="700"), width="100%", align="center", flex_wrap="wrap"),
             spacing="5", width="100%", max_width="1180px", padding_y=["1.5rem", "2.5rem"], padding_x=["1rem", "1.5rem", "2rem"],
@@ -8271,6 +9486,7 @@ def management_navbar() -> rx.Component:
         ("Depoimentos", "/gestao/depoimentos", "messages-square"),
         ("Privacidade", "/gestao/privacidade", "shield-check"),
         ("Alfaiataria", "/gestao/alfaiataria", "scissors"),
+        ("Inspirações", "/gestao/inspiracoes", "images"),
     ]
     nav_links = [
         rx.link(
@@ -8782,14 +9998,15 @@ app.add_page(management_reports_page, route="/gestao/relatorios", title="Relató
 app.add_page(admin_testimonials_page, route="/gestao/depoimentos", title="Moderação de depoimentos | OSDROUPA", on_load=WardrobeLifeState.load_admin_testimonials)
 app.add_page(admin_privacy_page, route="/gestao/privacidade", title="Solicitações de privacidade | OSDROUPA", on_load=WardrobeLifeState.load_admin_privacy_requests)
 app.add_page(admin_tailoring_page, route="/gestao/alfaiataria", title="Pedidos de alfaiataria | OSDROUPA", on_load=WardrobeLifeState.load_admin_tailoring_requests)
-app.add_page(daily_look_page, route="/look-do-dia", title="Look do dia | OSDROUPA", on_load=WardrobeLifeState.load_daily_look)
+app.add_page(daily_look_page, route="/look-do-dia", title="Look do dia | OSDROUPA", on_load=[WardrobeLifeState.load_weather_context, WardrobeLifeState.load_daily_look])
 app.add_page(loyalty_page, route="/fidelidade", title="Fidelidade | OSDROUPA", on_load=WardrobeLifeState.load_fidelity)
 app.add_page(usage_history_page, route="/historico-uso", title="Histórico de uso | OSDROUPA", on_load=WardrobeLifeState.load_usage_history)
 app.add_page(packing_page, route="/malas", title="Mala inteligente | OSDROUPA", on_load=WardrobeLifeState.load_travel_planner)
 app.add_page(tryon_page, route="/provador", title="Provador de combinações | OSDROUPA", on_load=WardrobeLifeState.load_tryon)
 app.add_page(tailoring_request_page, route="/servicos/solicitar", title="Solicitar ajuste | OSDROUPA", on_load=WardrobeLifeState.load_service_requests)
 app.add_page(privacy_page, route="/privacidade", title="Política de Privacidade | OSDROUPA", on_load=WardrobeLifeState.load_privacy_page)
-app.add_page(inspiration_page, route="/inspiracao", title="Inspiração | OSDROUPA", on_load=AuthState.restore_session)
+app.add_page(inspiration_page, route="/inspiracao", title="Inspiração | OSDROUPA", on_load=InspirationState.load_inspiration_page)
+app.add_page(admin_inspirations_page, route="/gestao/inspiracoes", title="Moderação de inspirações | OSDROUPA", on_load=InspirationState.load_admin_inspirations)
 app.add_page(articles_page, route="/artigos", title="Caderno OSDROUPA | OSDROUPA", on_load=AuthState.restore_session)
 app.add_page(article_detail_page, route="/artigo", title="Artigo | OSDROUPA", on_load=ContentState.load_article)
 app.add_page(challenges_page, route="/desafios", title="Desafios Pessoais | OSDROUPA", on_load=ContentState.load_challenges)

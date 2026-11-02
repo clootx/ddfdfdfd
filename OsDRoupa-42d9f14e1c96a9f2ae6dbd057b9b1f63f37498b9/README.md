@@ -47,6 +47,27 @@ A aplicação estará disponível em:
 - 🌐 **Página de Cadastro (Criar Conta):** [http://localhost:3000/cadastro](http://localhost:3000/cadastro)
 - ⚙️ **Backend FastAPI / Reflex Engine:** [http://localhost:8000](http://localhost:8000)
 
+### Configuração (`.env`)
+
+Copie `.env.example` para `.env` **na raiz do projeto** (mesma pasta do `rxconfig.py`). O app carrega esse arquivo ao iniciar; variáveis definidas no terminal têm prioridade. O `.env` é ignorado pelo Git — nunca o versione. Sem `OSDROUPA_BACKEND`, o código usa SQLite.
+
+### Estilista com IA (Google Gemini, plano gratuito)
+
+- Defina `GEMINI_API_KEY` (gerada em aistudio.google.com) e, se quiser, `GEMINI_MODEL` (padrão `gemini-3.8-flash`). A chave é lida só no servidor Reflex.
+- Sem a chave, o Look do Dia usa a sugestão básica por regras.
+- Limites persistentes no SQLite local (por conta/hora, por minuto e por dia, com pausa após erro 429) em `OSDROUPA_AI_*`; ajuste conforme a cota mostrada em aistudio.google.com/rate-limit.
+- Geração de imagens é **paga** e fica desligada (`OSDROUPA_IMAGES_ENABLED=false`).
+- Personalização (perfil de estilo e avaliações 👍/👎) pode ser desligada por cada pessoa no perfil. No plano gratuito, o Google pode usar o conteúdo enviado para melhorar os produtos dele; por isso só dados mínimos são enviados (veja a Política de Privacidade no app e as Changes 029 e 030).
+
+### Testes
+
+```powershell
+pip install -r requirements-dev.txt
+pytest                 # usa bancos SQLite temporários e provedores falsos (MOCK); não toca em data/
+pyflakes OSDroupa professormateria tests rxconfig.py
+pytest -m live         # chamadas REAIS (Open-Meteo e uma ao Gemini); só com autorização e plano gratuito
+```
+
 ---
 
 ## 🧭 Mapa de Navegação do Repositório: Onde Encontrar Tudo
