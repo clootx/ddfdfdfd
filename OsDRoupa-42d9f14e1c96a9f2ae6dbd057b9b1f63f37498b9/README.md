@@ -30,17 +30,51 @@ Pedidos demonstrativos reservam o estoque por até 24 horas e não cobram. Para 
 
 ---
 
-## 🚀 Como Executar o Projeto Localmente
+## 🚀 Como Executar o Projeto no Seu PC (Windows)
 
-Com o ambiente virtual ativado no terminal:
+Cada pessoa roda a própria cópia: os dados ficam só no PC dela (SQLite) e cada uma usa a própria chave do Gemini.
+
+**Pré-requisitos:** Python **3.12** ([python.org](https://www.python.org/downloads/), marque "Add Python to PATH"), [Git](https://git-scm.com/) e acesso a este repositório no GitHub.
+
+**1. Baixar o projeto** (PowerShell):
 
 ```powershell
-# Ativar o ambiente virtual (Windows PowerShell)
-.venv\Scripts\Activate.ps1
+cd $HOME\Downloads
+git clone https://github.com/brunomagno16/OsDRoupa-42d9f14e1c96a9f2ae6dbd057b9b1f63f37498b9.git osdroupa
+cd osdroupa\OsDRoupa-42d9f14e1c96a9f2ae6dbd057b9b1f63f37498b9
+```
 
-# Executar a aplicação Reflex em modo de desenvolvimento
+O projeto fica na pasta interna (a de nome comprido); rode todos os comandos a partir dela. Enquanto o estilista com IA não estiver na `main`, acrescente `-b feat/estilista-gemini` ao `git clone`.
+
+**2. Criar o ambiente e instalar:**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1     # se for bloqueado: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+pip install -r requirements.txt
+```
+
+**3. Configurar:**
+
+```powershell
+copy .env.example .env
+notepad .env
+```
+
+O `.env.example` já vem pronto para rodar localmente (`OSDROUPA_BACKEND=sqlite`, `GEMINI_MODEL=gemini-3.6-flash`). Só preencha `GEMINI_API_KEY` com a sua chave gratuita de [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Sem chave, o app funciona e o Look do Dia usa a sugestão básica. O `.env` é pessoal: não envie para ninguém nem para o Git.
+
+**4. Rodar:**
+
+```powershell
 reflex run
 ```
+
+A primeira execução demora alguns minutos (baixa as dependências do site). Quando aparecer `App running at: http://localhost:3000`, abra o endereço e crie sua conta. O banco `data/osdroupa.sqlite3` é criado automaticamente.
+
+**Problemas comuns:**
+- Porta ocupada: `reflex run --frontend-port 3001 --backend-port 8001`.
+- Tela recarregando sozinha a cada poucos segundos: pare (Ctrl+C) e rode `reflex run --env prod`.
+- Conta administradora (telas de gestão): antes de cadastrar, adicione `OSDROUPA_ADMIN_EMAIL=seu@email.com` ao `.env`.
 
 A aplicação estará disponível em:
 - 🌐 **Página Inicial (Entrar / Login):** [http://localhost:3000/](http://localhost:3000/)
@@ -53,7 +87,7 @@ Copie `.env.example` para `.env` **na raiz do projeto** (mesma pasta do `rxconfi
 
 ### Estilista com IA (Google Gemini, plano gratuito)
 
-- Defina `GEMINI_API_KEY` (gerada em aistudio.google.com) e, se quiser, `GEMINI_MODEL` (padrão `gemini-3.8-flash`). A chave é lida só no servidor Reflex.
+- Defina `GEMINI_API_KEY` (gerada em aistudio.google.com) e, se quiser, `GEMINI_MODEL` (o `.env.example` usa `gemini-3.6-flash`; sem a variável, o código usa `gemini-3.8-flash`). A chave é lida só no servidor Reflex.
 - Sem a chave, o Look do Dia usa a sugestão básica por regras.
 - Limites persistentes no SQLite local (por conta/hora, por minuto e por dia, com pausa após erro 429) em `OSDROUPA_AI_*`; ajuste conforme a cota mostrada em aistudio.google.com/rate-limit.
 - Geração de imagens é **paga** e fica desligada (`OSDROUPA_IMAGES_ENABLED=false`).
