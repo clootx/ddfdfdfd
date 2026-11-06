@@ -34,17 +34,17 @@ Pedidos demonstrativos reservam o estoque por até 24 horas e não cobram. Para 
 
 Cada pessoa roda a própria cópia: os dados ficam só no PC dela (SQLite) e cada uma usa a própria chave do Gemini.
 
-**Pré-requisitos:** Python **3.12** ([python.org](https://www.python.org/downloads/), marque "Add Python to PATH"), [Git](https://git-scm.com/) e acesso a este repositório no GitHub.
+**Pré-requisitos:** Python **3.12** ([python.org](https://www.python.org/downloads/), marque "Add Python to PATH") e [Git](https://git-scm.com/).
 
 **1. Baixar o projeto** (PowerShell):
 
 ```powershell
 cd $HOME\Downloads
-git clone https://github.com/brunomagno16/OsDRoupa-42d9f14e1c96a9f2ae6dbd057b9b1f63f37498b9.git osdroupa
+git clone https://github.com/clootx/ddfdfdfd.git osdroupa
 cd osdroupa\OsDRoupa-42d9f14e1c96a9f2ae6dbd057b9b1f63f37498b9
 ```
 
-O projeto fica na pasta interna (a de nome comprido); rode todos os comandos a partir dela. Enquanto o estilista com IA não estiver na `main`, acrescente `-b feat/estilista-gemini` ao `git clone`.
+O projeto fica na pasta interna (a de nome comprido); rode todos os comandos a partir dela.
 
 **2. Criar o ambiente e instalar:**
 
