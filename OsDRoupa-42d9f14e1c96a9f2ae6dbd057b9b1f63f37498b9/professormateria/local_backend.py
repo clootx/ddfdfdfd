@@ -112,6 +112,40 @@ def _stamp(value: datetime | None = None) -> str:
     return (value or _now()).isoformat(timespec="seconds")
 
 
+DEMO_ORDER_FLOW = ["Confirmado", "Em preparo", "Enviado", "Entregue"]
+CUSTOMER_CANCELLABLE_STATUSES = {"Aguardando confirmação", "Confirmado"}
+
+
+def _demo_orders_auto() -> bool:
+    """Pedidos de demonstração avançam sozinhos (padrão); OSDROUPA_DEMO_ORDER_AUTO=0 volta à confirmação manual."""
+    return os.environ.get("OSDROUPA_DEMO_ORDER_AUTO", "1").strip().lower() not in {"0", "false", "nao", "não", "no"}
+
+
+def _demo_order_step_minutes() -> float:
+    try:
+        return max(float(os.environ.get("OSDROUPA_DEMO_ORDER_STEP_MINUTES", "2")), 0.01)
+    except ValueError:
+        return 2.0
+
+
+def _clean_store_link(value: Any) -> tuple[str, str]:
+    """Link opcional da loja oficial: só HTTPS, sem credenciais nem espaços."""
+    link = str(value or "").strip()
+    if not link:
+        return "", ""
+    parts = urlsplit(link)
+    if (
+        len(link) > 500
+        or parts.scheme.lower() != "https"
+        or not parts.hostname
+        or parts.username
+        or parts.password
+        or any(ord(char) < 32 or char.isspace() for char in link)
+    ):
+        return "", "Use o link HTTPS completo da página do produto na loja oficial."
+    return link, ""
+
+
 def _as_price(cents: int) -> str:
     return f"{cents / 100:.2f}"
 
@@ -600,7 +634,7 @@ class LocalBackend:
                         db.execute(f"ALTER TABLE orders ADD COLUMN {column} {declaration}")
                 db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_gateway_order ON orders(gateway,gateway_order_id) WHERE gateway_order_id IS NOT NULL")
                 product_columns = {row[1] for row in db.execute("PRAGMA table_info(products)")}
-                for column in ("brand", "collection", "product_type", "sizes", "colors", "material", "fit"):
+                for column in ("brand", "collection", "product_type", "sizes", "colors", "material", "fit", "external_url"):
                     if column not in product_columns:
                         db.execute(f"ALTER TABLE products ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
                 count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
@@ -714,6 +748,7 @@ class LocalBackend:
             "Tamanhos": row["sizes"], "Cores": row["colors"], "Material": row["material"], "Caimento": row["fit"],
             "Precisa_Produzir": bool(row["made_to_order"]),
             "demonstracao": bool(row["demonstration"]), "active": bool(row["active"]),
+            "Link_Loja": row["external_url"],
             "created_at": row["created_at"],
         }
 
@@ -731,6 +766,44 @@ class LocalBackend:
                 "UPDATE orders SET stock_reserved=0,status='Expirado',updated_at=? WHERE id=?",
                 (_stamp(), order_id),
             )
+        self._advance_demo_orders(db)
+
+    @staticmethod
+    def _advance_demo_orders(db: sqlite3.Connection) -> None:
+        """Pedidos de demonstração (sem cobrança) avançam sozinhos: não há loja real para confirmá-los."""
+        if not _demo_orders_auto():
+            return
+        step = timedelta(minutes=_demo_order_step_minutes())
+        now = _now()
+        rows = db.execute(
+            "SELECT id,status,created_at FROM orders WHERE gateway='demo' AND paid=0 AND status IN ('Confirmado','Em preparo','Enviado')"
+        ).fetchall()
+        for row in rows:
+            try:
+                created = datetime.fromisoformat(row["created_at"])
+            except (TypeError, ValueError):
+                continue
+            target = DEMO_ORDER_FLOW[min(int((now - created) / step), len(DEMO_ORDER_FLOW) - 1)]
+            if DEMO_ORDER_FLOW.index(target) > DEMO_ORDER_FLOW.index(row["status"]):
+                db.execute(
+                    "UPDATE orders SET status=?,stock_reserved=CASE WHEN ?='Entregue' THEN 0 ELSE stock_reserved END,updated_at=? WHERE id=?",
+                    (target, target, _stamp(), row["id"]),
+                )
+
+    def _cancel_own_order(self, db: sqlite3.Connection, user: sqlite3.Row, order_id: int) -> tuple[dict[str, Any], int]:
+        """Cliente cancela o próprio pedido de demonstração antes da preparação; o estoque volta."""
+        db.execute("BEGIN IMMEDIATE")
+        self._release_expired_reservations(db)
+        order = db.execute("SELECT * FROM orders WHERE id=? AND user_id=?", (order_id, user["id"])).fetchone()
+        if order is None:
+            return {"message": "Pedido não encontrado."}, 404
+        if order["gateway"] != "demo" or order["paid"] or order["status"] not in CUSTOMER_CANCELLABLE_STATUSES:
+            return {"message": "Este pedido não pode mais ser cancelado."}, 409
+        if order["stock_reserved"]:
+            for item in db.execute("SELECT product_id,quantity FROM order_items WHERE order_id=?", (order_id,)).fetchall():
+                db.execute("UPDATE products SET stock=stock+? WHERE id=?", (item["quantity"], item["product_id"]))
+        db.execute("UPDATE orders SET status='Cancelado',stock_reserved=0,updated_at=? WHERE id=?", (_stamp(), order_id))
+        return self._order_detail(db, order_id), 200
 
     def _register(self, db: sqlite3.Connection, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         name = str(payload.get("nome") or payload.get("name") or "").strip()
@@ -844,6 +917,8 @@ class LocalBackend:
                 return {"message": "Um produto não está mais disponível."}, 409
             if not product["demonstration"]:
                 return {"message": "O checkout local aceita somente produtos demonstrativos."}, 409
+            if product["external_url"]:
+                return {"message": f"“{product['name']}” é vendido na loja oficial; use o botão Comprar na loja oficial."}, 409
             product_rows.append((product, quantity))
             total_cents += product["price_cents"] * quantity
         now = _stamp()
@@ -851,8 +926,8 @@ class LocalBackend:
         cursor = db.execute(
             """INSERT INTO orders(user_id,address_id,total_cents,status,payment_status,paid,idempotency_key,
             reservation_expires_at,stock_reserved,created_at,updated_at)
-            VALUES(?,?,?,'Aguardando confirmação','Sem pagamento demonstrativo',0,?, ?,1,?,?)""",
-            (user["id"], address_id, total_cents, key, expires, now, now),
+            VALUES(?,?,?,?,'Sem pagamento demonstrativo',0,?, ?,1,?,?)""",
+            (user["id"], address_id, total_cents, "Confirmado" if _demo_orders_auto() else "Aguardando confirmação", key, expires, now, now),
         )
         order_id = int(cursor.lastrowid)
         for product, quantity in product_rows:
@@ -1073,6 +1148,9 @@ class LocalBackend:
             return {"message": "Preço ou estoque inválido."}, 400
         if price < 0 or stock < 0 or stock > 1_000_000:
             return {"message": "Preço e estoque precisam ser positivos."}, 400
+        store_link, link_error = _clean_store_link(payload.get("Link_Loja") or payload.get("link_loja") or "")
+        if link_error:
+            return {"message": link_error}, 400
         demonstration_raw = payload.get("demonstracao", True)
         demonstration = str(demonstration_raw).strip().lower() not in {"false", "0", "nao", "não"}
         metadata = (
@@ -1088,9 +1166,9 @@ class LocalBackend:
         cursor = db.execute(
             """INSERT INTO products
             (name,description,category,price_cents,stock,image_url,brand,collection,product_type,sizes,colors,material,fit,
-             made_to_order,demonstration,active,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,1,?,?)""",
-            (name, description, category, price, stock, image, *metadata, int(demonstration), now, now),
+             made_to_order,demonstration,active,external_url,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,1,?,?,?)""",
+            (name, description, category, price, stock, image, *metadata, int(demonstration), store_link, now, now),
         )
         return self._product_dict(db.execute("SELECT * FROM products WHERE id=?", (cursor.lastrowid,)).fetchone()), 201
 
@@ -1113,6 +1191,7 @@ class LocalBackend:
             "Material": payload.get("Material", row["material"]),
             "Caimento": payload.get("Caimento", row["fit"]),
             "demonstracao": payload.get("demonstracao", row["demonstration"]),
+            "Link_Loja": payload.get("Link_Loja", row["external_url"]),
         }
         name = str(merged["Nome"] or "").strip()
         description = str(merged["Descricao"] or "").strip()
@@ -1130,6 +1209,9 @@ class LocalBackend:
         if price_cents < 0 or stock < 0 or stock > 1_000_000:
             return {"message": "Preço e estoque precisam ser positivos."}, 400
         demonstration = str(merged["demonstracao"]).strip().lower() not in {"false", "0", "nao", "não"}
+        store_link, link_error = _clean_store_link(merged["Link_Loja"])
+        if link_error:
+            return {"message": link_error}, 400
         metadata = (
             str(merged["Marca"] or "").strip()[:100], str(merged["Colecao"] or "").strip()[:100],
             str(merged["Tipo"] or "").strip()[:100], str(merged["Tamanhos"] or "").strip()[:160],
@@ -1138,8 +1220,8 @@ class LocalBackend:
         )
         db.execute(
             """UPDATE products SET name=?,description=?,category=?,price_cents=?,stock=?,image_url=?,
-            brand=?,collection=?,product_type=?,sizes=?,colors=?,material=?,fit=?,demonstration=?,updated_at=? WHERE id=?""",
-            (name, description, category, price_cents, stock, image, *metadata, int(demonstration), _stamp(), product_id),
+            brand=?,collection=?,product_type=?,sizes=?,colors=?,material=?,fit=?,demonstration=?,external_url=?,updated_at=? WHERE id=?""",
+            (name, description, category, price_cents, stock, image, *metadata, int(demonstration), store_link, _stamp(), product_id),
         )
         return self._product_dict(db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()), 200
 
@@ -1493,6 +1575,8 @@ class LocalBackend:
                     self._release_expired_reservations(db)
                     rows = db.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
                     return {"pedidos": [self._order_row(row) for row in rows]}, 200
+                if endpoint.startswith("cancelarPedido/") and method == "POST":
+                    return self._cancel_own_order(db, user, self._path_int(endpoint))
                 if endpoint.startswith("meuPedido/") and method == "GET":
                     order_id = self._path_int(endpoint)
                     db.execute("BEGIN IMMEDIATE")

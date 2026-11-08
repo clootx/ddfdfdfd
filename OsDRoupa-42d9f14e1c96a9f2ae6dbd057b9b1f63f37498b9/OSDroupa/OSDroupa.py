@@ -2265,6 +2265,7 @@ class StoreState(AuthState):
             "made_to_order": "true" if made_to_order else "false",
             "demonstration": "true" if demonstration else "false",
             "availability": availability,
+            "store_link": str(item.get("Link_Loja") or ""),
         }
 
     def _load_cart_from_storage(self):
@@ -2591,6 +2592,16 @@ class StoreState(AuthState):
         self.cart_feedback = "Produto removido da sacola."
 
 
+ORDER_CANCELLABLE_STATUSES = {"Aguardando confirmação", "Confirmado"}
+
+
+def _order_cancellable(row: dict) -> bool:
+    """Só pedidos de demonstração, sem pagamento, antes da preparação (mesma regra do backend)."""
+    status = row.get("status")
+    status = status.get("status") if isinstance(status, dict) else status
+    return status in ORDER_CANCELLABLE_STATUSES and row.get("provedor") == "Sem cobrança" and not row.get("paid")
+
+
 class OrdersState(AuthState):
     """Checkout demonstrativo e Checkout Pro Mercado Pago."""
 
@@ -2611,6 +2622,8 @@ class OrdersState(AuthState):
     orders: list[dict[str, str]] = []
     order_loading: bool = False
     order_error: str = ""
+    order_notice: str = ""
+    order_cancelling: bool = False
     order_detail: dict[str, str] = {"checkout_url": ""}
     order_items: list[dict[str, str]] = []
 
@@ -2837,7 +2850,7 @@ class OrdersState(AuthState):
                 self.checkout_error = "O checkout não retornou um pedido válido. A sacola e a chave da tentativa foram preservadas."
                 return
             if self.checkout_mode == "demonstracao":
-                self.checkout_notice = "Pedido demonstrativo enviado para confirmação da loja. Nenhum pagamento foi realizado."
+                self.checkout_notice = "Pedido demonstrativo registrado. Acompanhe o status em Meus pedidos; nenhum pagamento foi realizado."
             else:
                 payment = payload.get("cobranca")
                 if not isinstance(payment, dict):
@@ -2910,6 +2923,7 @@ class OrdersState(AuthState):
                     or "Aguardando pagamento"
                 )
                 normalized_orders.append({
+                    "cancellable": "true" if _order_cancellable(row) else "false",
                     "id": str(row.get("id", "")),
                     "total": str(row.get("Total", row.get("total", "0"))),
                     "status": str(row.get("status", {}).get("status") if isinstance(row.get("status"), dict) else row.get("status") or row.get("status_pedido_id") or "Em processamento"),
@@ -2959,6 +2973,7 @@ class OrdersState(AuthState):
             if isinstance(payment, list):
                 payment = payment[0] if payment else {}
             self.order_detail = {
+                "cancellable": "true" if _order_cancellable({**order, "provedor": payload.get("provedor"), "paid": isinstance(payment, dict) and payment.get("pago_confirmado")}) else "false",
                 "id": str(order["id"]),
                 "total": str(order.get("Total", order.get("total", "0"))),
                 "status": str(status.get("status") if isinstance(status, dict) else status or order.get("status_pedido_id") or "Em processamento"),
@@ -2978,6 +2993,35 @@ class OrdersState(AuthState):
             self.order_error = _xano_failure_message(exc, "Não foi possível carregar este pedido.")
         finally:
             self.order_loading = False
+
+    async def cancel_order(self, order_id: str):
+        """Cancela um pedido de demonstração da própria conta; o estoque volta para a loja."""
+        if self.order_cancelling or not str(order_id).isdigit():
+            return
+        self.order_cancelling = True
+        self.order_notice = ""
+        try:
+            async with XanoAsyncClient(timeout=XANO_TIMEOUT) as client:
+                response = await client.post(
+                    f"{XANO_PDB}/cancelarPedido/{order_id}",
+                    headers={"Authorization": f"Bearer {self._current_auth_token()}"},
+                )
+            if response.status_code == 401:
+                self._clear_auth_tokens()
+                self.account_validated = False
+                return rx.redirect("/login")
+            if response.status_code == 409:
+                self.order_notice = "Este pedido já está em preparação e não pode mais ser cancelado."
+            else:
+                response.raise_for_status()
+                self.order_notice = "Pedido cancelado. Os itens voltaram para o estoque da loja."
+        except (httpx.HTTPError, ValueError) as exc:
+            self.order_notice = _xano_failure_message(exc, "Não foi possível cancelar o pedido agora.")
+        finally:
+            self.order_cancelling = False
+        notice = self.order_notice
+        await self.load_order_detail()
+        self.order_notice = notice
 
 
 ARTICLE_CONTENT = [
@@ -4226,6 +4270,7 @@ class ManagementState(AuthState):
     product_price: str = ""
     product_stock: str = ""
     product_image_url: str = ""
+    product_store_link: str = ""
     product_demonstration: str = "true"
     product_action_message: str = ""
     product_action_error: bool = False
@@ -4410,6 +4455,9 @@ class ManagementState(AuthState):
     def set_product_image_url(self, value: str):
         self.product_image_url = value
 
+    def set_product_store_link(self, value: str):
+        self.product_store_link = value[:500]
+
     def set_product_demonstration(self, value: str):
         self.product_demonstration = "false" if value == "Venda real · Mercado Pago" else "true"
 
@@ -4443,6 +4491,7 @@ class ManagementState(AuthState):
                         "Preco": self.product_price,
                         "Qtd_Disp": self.product_stock,
                         "Url_Imagem": self.product_image_url.strip(),
+                        "Link_Loja": self.product_store_link.strip(),
                         "demonstracao": self.product_demonstration == "true",
                     },
                 )
@@ -4465,6 +4514,7 @@ class ManagementState(AuthState):
             self.product_price = ""
             self.product_stock = ""
             self.product_image_url = ""
+            self.product_store_link = ""
             self.product_demonstration = "true"
             global _public_catalog_cache, _public_catalog_cache_at
             _public_catalog_cache = None
@@ -8747,12 +8797,24 @@ def product_detail_page() -> rx.Component:
                 color=MUTED, font_size="0.88rem",
             ),
             rx.hstack(
-                rx.button(
-                    rx.hstack(rx.icon("shopping-bag", size=17), rx.text("Adicionar à sacola"), spacing="2"),
-                    on_click=StoreState.add_to_cart(StoreState.selected_product["id"]),
-                    disabled=StoreState.selected_product["availability"] == "Sem estoque",
-                    background=THREAD, color=INK, border_radius="100px", padding="0.9rem 1.4rem", font_weight="700",
-                    _hover={"background": "#F1B958"},
+                rx.cond(
+                    StoreState.selected_product["store_link"] != "",
+                    # Produto com link oficial: a compra acontece na loja dele, não no checkout do app.
+                    rx.link(
+                        rx.button(
+                            rx.hstack(rx.icon("external-link", size=17), rx.text("Comprar na loja oficial"), spacing="2"),
+                            background=THREAD, color=INK, border_radius="100px", padding="0.9rem 1.4rem", font_weight="700",
+                            _hover={"background": "#F1B958"},
+                        ),
+                        href=StoreState.selected_product["store_link"], is_external=True, rel="noopener noreferrer",
+                    ),
+                    rx.button(
+                        rx.hstack(rx.icon("shopping-bag", size=17), rx.text("Adicionar à sacola"), spacing="2"),
+                        on_click=StoreState.add_to_cart(StoreState.selected_product["id"]),
+                        disabled=StoreState.selected_product["availability"] == "Sem estoque",
+                        background=THREAD, color=INK, border_radius="100px", padding="0.9rem 1.4rem", font_weight="700",
+                        _hover={"background": "#F1B958"},
+                    ),
                 ),
                 rx.button(
                     rx.cond(StoreState.selected_product["favorite"] == "true", rx.icon("heart", fill="currentColor"), rx.icon("heart")),
@@ -9688,6 +9750,7 @@ def management_products_page() -> rx.Component:
             ),
             field("Descrição", value=ManagementState.product_description, on_change=ManagementState.set_product_description, placeholder="Detalhes do tecido e caimento"),
             field("Imagem (URL HTTPS ou /products/arquivo.svg)", value=ManagementState.product_image_url, on_change=ManagementState.set_product_image_url, placeholder="/products/linen-shirt.svg"),
+            field("Link da loja oficial · opcional (com link, a compra acontece na loja; use foto e descrição próprias)", value=ManagementState.product_store_link, on_change=ManagementState.set_product_store_link, placeholder="https://loja.exemplo.com/produto"),
             rx.vstack(
                 _label("Modo de venda"),
                 rx.select(
@@ -9821,8 +9884,8 @@ def checkout_page() -> rx.Component:
         rx.vstack(
             rx.icon("circle-check", size=46, color=OK),
             rx.badge(rx.cond(OrdersState.checkout_mode == "demonstracao", "PEDIDO DE DEMONSTRAÇÃO", "AGUARDANDO CONFIRMAÇÃO DO PAGAMENTO"), color_scheme=rx.cond(OrdersState.checkout_mode == "demonstracao", "amber", "blue"), variant="soft"),
-            rx.heading(rx.cond(OrdersState.checkout_mode == "demonstracao", "Pedido enviado para confirmação", "Pedido criado · pagamento pendente"), font_family=DISPLAY, color=INK, text_align="center"),
-            rx.text(rx.cond(OrdersState.checkout_mode == "demonstracao", "A loja ainda precisa confirmar disponibilidade, prazo e preço. Nenhum pagamento foi realizado.", "O pedido foi registrado. A confirmação só ocorre depois da consulta segura do webhook Mercado Pago."), color=MUTED, text_align="center"),
+            rx.heading(rx.cond(OrdersState.checkout_mode == "demonstracao", "Pedido registrado", "Pedido criado · pagamento pendente"), font_family=DISPLAY, color=INK, text_align="center"),
+            rx.text(rx.cond(OrdersState.checkout_mode == "demonstracao", "O pedido de demonstração avança sozinho até Entregue; você pode cancelá-lo em Meus pedidos antes da preparação. Nenhum pagamento foi realizado.", "O pedido foi registrado. A confirmação só ocorre depois da consulta segura do webhook Mercado Pago."), color=MUTED, text_align="center"),
             rx.text("Pedido #" + OrdersState.checkout_order_id, color=INK, font_weight="700"),
             rx.cond(OrdersState.checkout_url != "", rx.link("Abrir checkout Mercado Pago", href=OrdersState.checkout_url, is_external=True, background=THREAD, color=INK, padding="0.85rem 1.2rem", border_radius="100px", font_weight="800")),
             rx.cond(OrdersState.checkout_url != "", rx.text("Depois de pagar, volte ao OSDROUPA e atualize Meus pedidos para acompanhar a confirmação.", color=MUTED, font_size="0.84rem", text_align="center", max_width="520px")),
@@ -9925,6 +9988,16 @@ def order_detail_page() -> rx.Component:
                         rx.hstack(rx.text("Pagamento", color=MUTED), rx.spacer(), rx.badge(OrdersState.order_detail["payment_status"], color_scheme=rx.cond(OrdersState.order_detail["paid"] == "true", "green", "gray"), variant="soft"), width="100%"),
                         rx.hstack(rx.text("Total", color=INK, font_weight="700"), rx.spacer(), rx.text("R$ " + OrdersState.order_detail["total"], color=INK, font_weight="700", font_size="1.2rem"), width="100%"),
                         rx.cond(OrdersState.order_checkout_url != "", rx.link("Continuar pagamento no Mercado Pago", href=OrdersState.order_checkout_url, is_external=True, color=DENIM, font_weight="700")),
+                        rx.cond(OrdersState.order_notice != "", rx.callout(OrdersState.order_notice, icon="info", color="blue", width="100%")),
+                        rx.hstack(
+                            rx.cond(
+                                OrdersState.order_detail["cancellable"] == "true",
+                                rx.button("Cancelar pedido", on_click=OrdersState.cancel_order(OrdersState.order_detail["id"]), loading=OrdersState.order_cancelling, variant="outline", color_scheme="red", border_radius="100px"),
+                            ),
+                            rx.button(rx.icon("refresh-cw", size=15), "Atualizar status", on_click=OrdersState.load_order_detail, variant="soft", border_radius="100px"),
+                            spacing="3", flex_wrap="wrap",
+                        ),
+                        rx.text("Pedidos de demonstração avançam sozinhos até Entregue e podem ser cancelados antes da preparação.", color=MUTED, font_size="0.82rem"),
                         rx.text("O pagamento só aparece como confirmado após validação do webhook Mercado Pago.", color=MUTED, font_size="0.82rem"),
                         spacing="4", width="100%", align_items="stretch", background="#FFFFFF", border_radius="22px", padding="1.5rem",
                     ),
